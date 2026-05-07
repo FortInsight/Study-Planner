@@ -179,6 +179,15 @@
                 Daily target mins
               <input type="number" name="itemDailyTargetMinutes" min="10" max="720" step="5" value="120">
             </label>
+            <label>
+              Completion alert
+              <select name="itemAlertMode">
+                <option value="ring">Ring</option>
+                <option value="vibrate">Vibrate</option>
+                <option value="both">Both</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
           </div>
           <button type="submit" class="primary-btn" id="savePlanButton">Save study item</button>
         </form>
@@ -206,7 +215,6 @@
           <div class="timer-display" id="timerDisplay">25:00</div>
           <div class="timer-actions">
             <button type="button" id="startTimer" class="primary-btn">Start</button>
-            <button type="button" id="pauseTimer" class="secondary-btn">Pause</button>
             <button type="button" id="resetTimer" class="ghost-btn">Stop</button>
           </div>
 

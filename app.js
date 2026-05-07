@@ -8,7 +8,8 @@ const defaultState = {
   timerSettings: {
     focusMinutes: 25,
     breakMinutes: 5,
-    dailyTargetMinutes: 120
+    dailyTargetMinutes: 120,
+    alertMode: "ring"
   },
   timerSession: null
 };
@@ -25,7 +26,8 @@ function createDefaultTimer() {
     secondsLeft: state.timerSettings.focusMinutes * 60,
     running: false,
     selectedItemId: "",
-    stageEndsAt: null
+    stageEndsAt: null,
+    pausedSecondsLeft: null
   };
 }
 
@@ -59,7 +61,6 @@ const timerDisplay = document.getElementById("timerDisplay");
 const timerStage = document.getElementById("timerStage");
 const timerSettingsSummary = document.getElementById("timerSettingsSummary");
 const startTimerButton = document.getElementById("startTimer");
-const pauseTimerButton = document.getElementById("pauseTimer");
 const resetTimerButton = document.getElementById("resetTimer");
 const todayProgressText = document.getElementById("todayProgressText");
 const todayProgressBar = document.getElementById("todayProgressBar");
@@ -85,8 +86,7 @@ let viewCursor = startOfDay(new Date());
 let trendCursor = startOfDay(new Date());
 let saveFeedbackByItemId = {};
 
-startTimerButton.addEventListener("click", startTimer);
-pauseTimerButton.addEventListener("click", pauseTimer);
+startTimerButton.addEventListener("click", handlePrimaryTimerAction);
 resetTimerButton.addEventListener("click", resetTimer);
 authForm.addEventListener("submit", handleLogin);
 document.getElementById("registerButton").addEventListener("click", handleRegister);
@@ -260,7 +260,8 @@ function handleAddItem(event) {
     pomodoro: normalizePomodoroSettings({
       focusMinutes: Number(data.get("itemFocusMinutes")),
       breakMinutes: Number(data.get("itemBreakMinutes")),
-      dailyTargetMinutes: Number(data.get("itemDailyTargetMinutes"))
+      dailyTargetMinutes: Number(data.get("itemDailyTargetMinutes")),
+      alertMode: String(data.get("itemAlertMode") || "")
     }),
     actualHours: existingItem?.actualHours || 0,
     actualContent: existingItem?.actualContent ?? getLegacyActualContent(existingItem),
@@ -303,7 +304,8 @@ function normalizeTimerSession(session) {
     secondsLeft: Math.max(0, Number(session.secondsLeft) || 0),
     running: Boolean(session.running),
     selectedItemId: session.selectedItemId || "",
-    stageEndsAt: session.stageEndsAt ? Number(session.stageEndsAt) : null
+    stageEndsAt: session.stageEndsAt ? Number(session.stageEndsAt) : null,
+    pausedSecondsLeft: Math.max(0, Number(session.pausedSecondsLeft) || 0)
   };
 }
 
@@ -317,7 +319,8 @@ function buildTimerFromSession(session) {
     secondsLeft: normalized.secondsLeft,
     running: normalized.running,
     selectedItemId: normalized.selectedItemId,
-    stageEndsAt: normalized.stageEndsAt
+    stageEndsAt: normalized.stageEndsAt,
+    pausedSecondsLeft: normalized.pausedSecondsLeft || null
   };
 }
 
@@ -327,7 +330,8 @@ function saveTimerSession() {
     secondsLeft: timer.secondsLeft,
     running: timer.running,
     selectedItemId: timer.selectedItemId,
-    stageEndsAt: timer.stageEndsAt
+    stageEndsAt: timer.stageEndsAt,
+    pausedSecondsLeft: timer.pausedSecondsLeft
   };
   saveState();
 }
@@ -336,23 +340,49 @@ function normalizePomodoroSettings(settings) {
   return {
     focusMinutes: clampNumber(settings?.focusMinutes, 5, 120, defaultState.timerSettings.focusMinutes),
     breakMinutes: clampNumber(settings?.breakMinutes, 1, 60, defaultState.timerSettings.breakMinutes),
-    dailyTargetMinutes: clampNumber(settings?.dailyTargetMinutes, 10, 720, defaultState.timerSettings.dailyTargetMinutes)
+    dailyTargetMinutes: clampNumber(settings?.dailyTargetMinutes, 10, 720, defaultState.timerSettings.dailyTargetMinutes),
+    alertMode: normalizeAlertMode(settings?.alertMode)
   };
+}
+
+function normalizeAlertMode(value) {
+  return ["ring", "vibrate", "both", "off"].includes(value) ? value : "ring";
+}
+
+function handlePrimaryTimerAction() {
+  if (timer.running) {
+    pauseTimer();
+    return;
+  }
+
+  if (timer.pausedSecondsLeft > 0) {
+    continueTimer();
+    return;
+  }
+
+  startTimer();
 }
 
 function startTimer() {
   if (timer.running) return;
-  const isPausedSession = (
-    (timer.mode === "focus" && timer.secondsLeft < getActiveTimerSettings().focusMinutes * 60)
-    || (timer.mode === "break" && timer.secondsLeft < getActiveTimerSettings().breakMinutes * 60)
-  );
-
-  if (!isPausedSession) {
-    syncTimerWithSelection(false);
-  }
-
   timer.selectedItemId = timerCourseSelect.value;
+  timer.mode = "focus";
+  syncTimerWithSelection(false);
   timer.running = true;
+  timer.pausedSecondsLeft = null;
+  timer.stageEndsAt = Date.now() + (timer.secondsLeft * 1000);
+  timerStage.textContent = getTimerStageLabel(timer.mode === "focus" ? "inProgress" : "break");
+  ensureTimerInterval();
+  saveTimerSession();
+  renderTimer();
+}
+
+function continueTimer() {
+  if (timer.running || !timer.pausedSecondsLeft) return;
+  timer.selectedItemId = timerCourseSelect.value;
+  timer.secondsLeft = timer.pausedSecondsLeft;
+  timer.running = true;
+  timer.pausedSecondsLeft = null;
   timer.stageEndsAt = Date.now() + (timer.secondsLeft * 1000);
   timerStage.textContent = getTimerStageLabel(timer.mode === "focus" ? "inProgress" : "break");
   ensureTimerInterval();
@@ -366,6 +396,7 @@ function pauseTimer() {
   timer.running = false;
   window.clearInterval(timer.intervalId);
   timer.intervalId = null;
+  timer.pausedSecondsLeft = timer.secondsLeft;
   timer.stageEndsAt = null;
   timerStage.textContent = getTimerStageLabel(timer.mode === "focus" ? "paused" : "breakPaused");
   saveTimerSession();
@@ -379,6 +410,7 @@ function resetTimer() {
   timer.mode = "focus";
   timer.secondsLeft = getActiveTimerSettings().focusMinutes * 60;
   timer.selectedItemId = timerCourseSelect.value;
+  timer.pausedSecondsLeft = null;
   timer.stageEndsAt = null;
   timerStage.textContent = getTimerStageLabel("ready");
   saveTimerSession();
@@ -413,9 +445,10 @@ function completeTimerStage() {
 
     saveState();
   }
-  ringCompletionBell();
+  runCompletionAlert();
   timer.mode = finishedMode;
   timer.secondsLeft = 0;
+  timer.pausedSecondsLeft = null;
   timer.stageEndsAt = null;
   timerStage.textContent = finishedMode === "focus" ? "Focus session completed" : "Break completed";
   saveTimerSession();
@@ -462,6 +495,7 @@ function populatePlannerForm(item) {
   form.elements.itemFocusMinutes.value = item.pomodoro?.focusMinutes || 25;
   form.elements.itemBreakMinutes.value = item.pomodoro?.breakMinutes || 5;
   form.elements.itemDailyTargetMinutes.value = item.pomodoro?.dailyTargetMinutes || 120;
+  form.elements.itemAlertMode.value = item.pomodoro?.alertMode || "ring";
   existingPlanIdInput.value = item.id;
   syncCustomContentField();
 }
@@ -1044,20 +1078,51 @@ function ringCompletionBell() {
 
   try {
     const context = new AudioContextClass();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(880, context.currentTime);
-    gain.gain.setValueAtTime(0.001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.7);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.7);
-    oscillator.onended = () => context.close();
+    const pattern = [
+      { frequency: 740, start: 0, duration: 0.38, gain: 0.3 },
+      { frequency: 880, start: 0.48, duration: 0.38, gain: 0.32 },
+      { frequency: 740, start: 1.0, duration: 0.38, gain: 0.3 },
+      { frequency: 988, start: 1.48, duration: 0.5, gain: 0.34 },
+      { frequency: 740, start: 2.18, duration: 0.38, gain: 0.3 },
+      { frequency: 880, start: 2.66, duration: 0.38, gain: 0.32 },
+      { frequency: 1047, start: 3.14, duration: 0.62, gain: 0.36 }
+    ];
+
+    pattern.forEach((tone) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(tone.frequency, context.currentTime + tone.start);
+      gain.gain.setValueAtTime(0.001, context.currentTime + tone.start);
+      gain.gain.exponentialRampToValueAtTime(tone.gain, context.currentTime + tone.start + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + tone.start + tone.duration);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(context.currentTime + tone.start);
+      oscillator.stop(context.currentTime + tone.start + tone.duration);
+    });
+
+    window.setTimeout(() => {
+      context.close();
+    }, 4200);
   } catch (error) {
     return;
+  }
+}
+
+function vibrateCompletionAlert() {
+  if (!("vibrate" in navigator)) return;
+  navigator.vibrate([250, 140, 250]);
+}
+
+function runCompletionAlert() {
+  const alertMode = normalizeAlertMode(getActiveTimerSettings().alertMode);
+  if (alertMode === "off") return;
+  if (alertMode === "ring" || alertMode === "both") {
+    ringCompletionBell();
+  }
+  if (alertMode === "vibrate" || alertMode === "both") {
+    vibrateCompletionAlert();
   }
 }
 
@@ -1115,7 +1180,8 @@ function renderTimerSettingsSummary() {
   timerSettingsSummary.innerHTML = [
     { label: "Focus mins", value: settings.focusMinutes },
     { label: "Break mins", value: settings.breakMinutes },
-    { label: "Daily target", value: `${settings.dailyTargetMinutes} mins` }
+    { label: "Daily target", value: `${settings.dailyTargetMinutes} mins` },
+    { label: "Alert", value: settings.alertMode.charAt(0).toUpperCase() + settings.alertMode.slice(1) }
   ].map((entry) => `
     <div class="timer-setting-card">
       <span>${entry.label}</span>
@@ -1127,6 +1193,7 @@ function renderTimerSettingsSummary() {
 function handleTimerCourseChange() {
   timer.selectedItemId = timerCourseSelect.value;
   syncTimerWithSelection(true);
+  timer.pausedSecondsLeft = null;
   saveTimerSession();
   render();
 }
@@ -1145,6 +1212,7 @@ function syncTimerWithSelection(resetStage = false) {
     timer.intervalId = null;
     timer.mode = "focus";
     timer.secondsLeft = settings.focusMinutes * 60;
+    timer.pausedSecondsLeft = null;
     timer.stageEndsAt = null;
   }
 }
@@ -1182,7 +1250,8 @@ function syncTimerClock() {
     secondsLeft: timer.secondsLeft,
     running: timer.running,
     selectedItemId: timer.selectedItemId,
-    stageEndsAt: timer.stageEndsAt
+    stageEndsAt: timer.stageEndsAt,
+    pausedSecondsLeft: timer.pausedSecondsLeft
   };
   saveState();
 }
@@ -1302,19 +1371,13 @@ function updateLiveItemDisplays() {
 }
 
 function updateTimerButtons() {
-  if (timer.running) {
-    startTimerButton.hidden = true;
-    pauseTimerButton.hidden = false;
-    pauseTimerButton.textContent = "Pause";
-    return;
-  }
-
-  const focusPaused = timer.mode === "focus" && timer.secondsLeft < getActiveTimerSettings().focusMinutes * 60;
-  const breakPaused = timer.mode === "break" && timer.secondsLeft < getActiveTimerSettings().breakMinutes * 60;
-  const isPausedMidSession = focusPaused || breakPaused;
+  const hasPausedSession = Boolean(timer.pausedSecondsLeft && timer.pausedSecondsLeft > 0);
   startTimerButton.hidden = false;
-  pauseTimerButton.hidden = true;
-  startTimerButton.textContent = isPausedMidSession ? "Continue" : "Start";
+  resetTimerButton.hidden = false;
+
+  startTimerButton.disabled = false;
+  resetTimerButton.disabled = false;
+  startTimerButton.textContent = timer.running ? "Pause" : (hasPausedSession ? "Continue" : "Start");
 }
 
 function sum(items, accessor) {
