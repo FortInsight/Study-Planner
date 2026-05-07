@@ -17,6 +17,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <div class="page-shell">
@@ -27,29 +28,30 @@
             <p class="eyebrow">Welcome</p>
             <h1>Sign in to your study planner</h1>
           </div>
-          <p class="section-note">Create a local account with a username and password, then keep your planner tied to that profile on this browser.</p>
+          <p class="section-note">Use your email and password to sign in with Supabase and stay signed in on this device until you log out.</p>
         </div>
 
-        <form id="authForm" class="auth-form">
+        <form id="authForm" class="auth-form" autocomplete="on">
           <label>
-            Username
-            <input type="text" name="username" id="authUsername" placeholder="yourname" required>
+            Email
+            <input type="email" name="email" id="authEmail" placeholder="you@example.com" autocomplete="email username" inputmode="email" required>
           </label>
           <label>
             Password
-            <input type="password" name="password" id="authPassword" placeholder="Enter password" required>
+            <input type="password" name="password" id="authPassword" placeholder="Enter password" autocomplete="current-password" enterkeyhint="go" required>
           </label>
           <div class="auth-actions">
             <button type="submit" class="primary-btn" id="loginButton">Sign in</button>
             <button type="button" class="ghost-btn" id="registerButton">Create account</button>
+            <button type="button" class="ghost-btn" id="forgotPasswordButton">Forgot password</button>
           </div>
-          <p class="auth-message" id="authMessage">Use an existing account or create a new one to start planning.</p>
+          <p class="auth-message" id="authMessage">Use your existing email account or create a new one to start planning. Press Enter after your password to sign in.</p>
         </form>
       </div>
     </section>
 
     <div id="appShell">
-      <header class="hero">
+      <header class="hero" id="overviewSection">
         <div class="hero-copy">
           <div class="account-bar">
             <div>
@@ -69,7 +71,16 @@
         <div class="hero-metrics" id="heroMetrics"></div>
       </header>
 
-      <section class="panel timeline-panel">
+      <nav class="section-nav" aria-label="Section navigation">
+        <a href="#overviewSection" class="section-nav-link">Overview</a>
+        <a href="#timelineSection" class="section-nav-link">Plan Window</a>
+        <a href="#plannerSection" class="section-nav-link">Planner</a>
+        <a href="#timerSection" class="section-nav-link">Timer</a>
+        <a href="#tasksSection" class="section-nav-link">Tasks</a>
+        <a href="#reportsSection" class="section-nav-link">Reports</a>
+      </nav>
+
+      <section class="panel timeline-panel" id="timelineSection">
         <div class="section-heading timeline-heading">
           <div>
             <p class="eyebrow">Plan Window</p>
@@ -93,7 +104,7 @@
       </section>
 
       <main class="layout">
-        <section class="panel planner-panel">
+        <section class="panel planner-panel" id="plannerSection">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Planner</p>
@@ -188,12 +199,26 @@
                 <option value="off">Off</option>
               </select>
             </label>
+            <label>
+              Alert sound
+              <select name="itemAlertSound">
+                <option value="phone">Phone ring</option>
+                <option value="bell">Bell</option>
+                <option value="chime">Chime</option>
+                <option value="popcorn">Pop corn</option>
+              </select>
+            </label>
+            <div class="alert-preview-field">
+              <span>Preview alert</span>
+              <button type="button" id="testAlertButton" class="secondary-btn">Test alert</button>
+            </div>
           </div>
           <button type="submit" class="primary-btn" id="savePlanButton">Save study item</button>
+          <p class="save-status full-span" id="plannerSaveStatus" aria-live="polite"></p>
         </form>
       </section>
 
-        <section class="panel timer-panel">
+        <section class="panel timer-panel" id="timerSection">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Focus Timer</p>
@@ -229,7 +254,7 @@
           </div>
         </section>
 
-        <section class="panel dashboard-panel">
+        <section class="panel dashboard-panel" id="tasksSection">
           <div class="section-heading">
             <div>
               <p class="eyebrow" id="upcomingWindowEyebrow">Today</p>
@@ -247,7 +272,7 @@
           <div id="itemsList" class="item-grid"></div>
         </section>
 
-        <section class="panel reports-panel">
+        <section class="panel reports-panel" id="reportsSection">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Performance</p>
@@ -285,6 +310,14 @@
             </div>
             <div id="typeBreakdown" class="achievement-doughnut-wrap"></div>
           </div>
+
+          <div class="chart-wrap debug-panel" id="debugPanel">
+            <div>
+              <h3>Temporary debug status</h3>
+              <p>Local Supabase connection details for testing only.</p>
+            </div>
+            <div class="debug-grid" id="debugGrid"></div>
+          </div>
         </section>
       </main>
     </div>
@@ -321,6 +354,7 @@
     </article>
   </template>
 
+  <script src="supabase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

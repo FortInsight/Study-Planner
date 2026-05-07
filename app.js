@@ -1,6 +1,8 @@
 ﻿const STORAGE_KEY = "study-planner-dashboard-v1";
 
 const AUTH_STORAGE_KEY = "study-planner-auth-v1";
+const supabaseConfig = window.SUPABASE_CONFIG || {};
+const supabaseClient = createSupabaseClient();
 
 const defaultState = {
   items: [],
@@ -9,7 +11,8 @@ const defaultState = {
     focusMinutes: 25,
     breakMinutes: 5,
     dailyTargetMinutes: 120,
-    alertMode: "ring"
+    alertMode: "ring",
+    alertSound: "phone"
   },
   timerSession: null
 };
@@ -38,10 +41,13 @@ let timer = createDefaultTimer();
 const authShell = document.getElementById("authShell");
 const appShell = document.getElementById("appShell");
 const authForm = document.getElementById("authForm");
+const authEmailInput = document.getElementById("authEmail");
+const authPasswordInput = document.getElementById("authPassword");
 const authMessage = document.getElementById("authMessage");
 const currentUsername = document.getElementById("currentUsername");
 const authToggleButton = document.getElementById("authToggleButton");
 const logoutButton = document.getElementById("logoutButton");
+const forgotPasswordButton = document.getElementById("forgotPasswordButton");
 const form = document.getElementById("plannerForm");
 const editingItemIdInput = document.getElementById("editingItemId");
 const existingPlanField = document.getElementById("existingPlanField");
@@ -49,6 +55,7 @@ const existingPlanIdInput = document.getElementById("existingPlanId");
 const createPlanModeButton = document.getElementById("createPlanModeButton");
 const updatePlanModeButton = document.getElementById("updatePlanModeButton");
 const savePlanButton = document.getElementById("savePlanButton");
+const plannerSaveStatus = document.getElementById("plannerSaveStatus");
 const itemsList = document.getElementById("itemsList");
 const heroMetrics = document.getElementById("heroMetrics");
 const reportCards = document.getElementById("reportCards");
@@ -61,6 +68,7 @@ const timerDisplay = document.getElementById("timerDisplay");
 const timerStage = document.getElementById("timerStage");
 const timerSettingsSummary = document.getElementById("timerSettingsSummary");
 const startTimerButton = document.getElementById("startTimer");
+const testAlertButton = document.getElementById("testAlertButton");
 const resetTimerButton = document.getElementById("resetTimer");
 const todayProgressText = document.getElementById("todayProgressText");
 const todayProgressBar = document.getElementById("todayProgressBar");
@@ -77,6 +85,7 @@ const upcomingWindowEyebrow = document.getElementById("upcomingWindowEyebrow");
 const upcomingWindowTitle = document.getElementById("upcomingWindowTitle");
 const upcomingWindowSubtitle = document.getElementById("upcomingWindowSubtitle");
 const upcomingDateFilter = document.getElementById("upcomingDateFilter");
+const debugGrid = document.getElementById("debugGrid");
 
 let activeView = "today";
 let authPanelCollapsed = Boolean(getCurrentUser());
@@ -85,11 +94,20 @@ let trendView = "week";
 let viewCursor = startOfDay(new Date());
 let trendCursor = startOfDay(new Date());
 let saveFeedbackByItemId = {};
+let debugStatus = {
+  userEmail: "",
+  userId: "",
+  taskLoadCount: 0,
+  latestSaveStatus: "No task save yet",
+  latestSupabaseError: "None"
+};
 
 startTimerButton.addEventListener("click", handlePrimaryTimerAction);
+testAlertButton.addEventListener("click", testCurrentAlert);
 resetTimerButton.addEventListener("click", resetTimer);
 authForm.addEventListener("submit", handleLogin);
 document.getElementById("registerButton").addEventListener("click", handleRegister);
+forgotPasswordButton.addEventListener("click", handleForgotPassword);
 authToggleButton.addEventListener("click", toggleAuthPanel);
 logoutButton.addEventListener("click", handleLogout);
 form.addEventListener("submit", handleAddItem);
@@ -108,18 +126,16 @@ document.addEventListener("visibilitychange", handleTimerVisibilityChange);
 window.addEventListener("focus", handleTimerVisibilityChange);
 
 registerServiceWorker();
-render();
+initializeAuth();
 
 function loadAuthState() {
   try {
     const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
     return {
-      users: stored?.users ?? [],
       currentUser: stored?.currentUser ?? ""
     };
   } catch (error) {
     return {
-      users: [],
       currentUser: ""
     };
   }
@@ -154,85 +170,425 @@ function saveAuthState() {
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authState));
 }
 
-function handleRegister() {
-  const usernameInput = document.getElementById("authUsername");
-  const passwordInput = document.getElementById("authPassword");
-  const username = usernameInput.value.trim();
-  const password = passwordInput.value.trim();
-  const normalizedUsername = normalizeUsername(username);
-
-  if (!normalizedUsername || !password) {
-    authMessage.textContent = "Add both a username and password to create your account.";
+async function handleRegister() {
+  if (!supabaseClient) {
+    authMessage.textContent = "Supabase is not configured yet. Add the URL and anon key in supabase-config.js first.";
     return;
   }
 
-  const existingUser = findStoredUser(username);
-  if (existingUser) {
-    authMessage.textContent = "That username already exists. Sign in instead or choose another name.";
+  const email = authEmailInput.value.trim();
+  const password = authPasswordInput.value.trim();
+
+  if (!email || !password) {
+    authMessage.textContent = "Add both an email and password to create your account.";
     return;
   }
 
-  authState.users.push({
-    username,
-    loginKey: normalizedUsername,
+  authMessage.textContent = "Creating your account...";
+  const { data, error } = await supabaseClient.auth.signUp({
+    email,
     password
   });
-  authState.currentUser = username;
-  saveAuthState();
-  state = loadState();
-  timer = createDefaultTimer();
-  authPanelCollapsed = true;
-  authMessage.textContent = "Account created. You are now signed in.";
-  authForm.reset();
-  render();
-  focusMainApp();
-}
 
-function handleLogin(event) {
-  event.preventDefault();
-  const data = new FormData(authForm);
-  const username = String(data.get("username") || "").trim();
-  const password = String(data.get("password") || "").trim();
-
-  const user = findStoredUser(username);
-
-  if (!user || user.password !== password) {
-    authMessage.textContent = "We could not match that username and password.";
+  if (error) {
+    authMessage.textContent = error.message;
     return;
   }
 
-  authState.currentUser = user.username;
-  saveAuthState();
-  state = loadState();
-  timer = createDefaultTimer();
-  authPanelCollapsed = true;
+  if (data.session?.user?.email) {
+    await ensureSupabaseProfile(data.session.user);
+    await applySignedInUser(data.session.user.email, data.session.user);
+    authMessage.textContent = "Account created and signed in.";
+    authForm.reset();
+    focusMainApp();
+    return;
+  }
+
+  applySignedOutUser();
+  authMessage.textContent = "Account created. Check your email if confirmation is required before sign in.";
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  if (!supabaseClient) {
+    authMessage.textContent = "Supabase is not configured yet. Add the URL and anon key in supabase-config.js first.";
+    return;
+  }
+
+  const data = new FormData(authForm);
+  const email = String(data.get("email") || "").trim();
+  const password = String(data.get("password") || "").trim();
+
+  if (!email || !password) {
+    authMessage.textContent = "Add both your email and password to sign in.";
+    return;
+  }
+
+  authMessage.textContent = "Signing you in...";
+  const { data: signInData, error } = await supabaseClient.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) {
+    authMessage.textContent = error.message;
+    return;
+  }
+
+  await ensureSupabaseProfile(signInData.user);
+  await applySignedInUser(signInData.user?.email || email, signInData.user);
   authMessage.textContent = "Signed in.";
   authForm.reset();
-  render();
   focusMainApp();
 }
 
-function handleLogout() {
+async function handleForgotPassword() {
+  if (!supabaseClient) {
+    authMessage.textContent = "Supabase is not configured yet. Add the URL and anon key in supabase-config.js first.";
+    return;
+  }
+
+  const email = authEmailInput.value.trim();
+  if (!email) {
+    authMessage.textContent = "Enter your email first, then use forgot password.";
+    return;
+  }
+
+  const options = {};
+  const redirectTo = getPasswordResetRedirect();
+  if (redirectTo) {
+    options.redirectTo = redirectTo;
+  }
+
+  authMessage.textContent = "Sending password reset email...";
+  const { error } = await supabaseClient.auth.resetPasswordForEmail(email, options);
+
+  if (error) {
+    authMessage.textContent = error.message;
+    return;
+  }
+
+  authMessage.textContent = redirectTo
+    ? "Password reset email sent. Check your inbox for the reset link."
+    : "Password reset email sent. Reset links work best when this app runs from localhost or a hosted URL.";
+}
+
+async function handleLogout() {
   pauseTimer();
-  authState.currentUser = "";
-  saveAuthState();
-  state = JSON.parse(JSON.stringify(defaultState));
-  timer = createDefaultTimer();
-  authPanelCollapsed = false;
+  if (!supabaseClient) {
+    applySignedOutUser();
+    authMessage.textContent = "Signed out.";
+    return;
+  }
+
+  const { error } = await supabaseClient.auth.signOut();
+  if (error) {
+    authMessage.textContent = error.message;
+    return;
+  }
+
+  applySignedOutUser();
   authMessage.textContent = "Signed out. Sign in again or create another account.";
-  render();
 }
 
 function toggleAuthPanel() {
   authPanelCollapsed = !authPanelCollapsed;
   render();
   if (!authPanelCollapsed) {
-    document.getElementById("authUsername").focus();
+    authEmailInput.focus();
   }
 }
 
-function handleAddItem(event) {
+async function initializeAuth() {
+  if (!supabaseClient) {
+    authState.currentUser = "";
+    saveAuthState();
+    authPanelCollapsed = false;
+    authMessage.textContent = "Add your Supabase URL and anon key in supabase-config.js to enable email sign in.";
+    render();
+    return;
+  }
+
+  try {
+    const { data, error } = await supabaseClient.auth.getSession();
+    if (error) {
+      authMessage.textContent = error.message;
+    }
+
+    const sessionEmail = data?.session?.user?.email || "";
+    if (sessionEmail) {
+      await ensureSupabaseProfile(data.session.user);
+      await applySignedInUser(sessionEmail, data.session.user, { silent: true });
+    } else {
+      applySignedOutUser({ silent: true });
+    }
+  } catch (error) {
+    authMessage.textContent = "We could not initialize Supabase sign in right now.";
+  }
+
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+    const nextEmail = session?.user?.email || "";
+    if (nextEmail) {
+      await ensureSupabaseProfile(session.user);
+      await applySignedInUser(nextEmail, session.user, { silent: true });
+      render();
+      return;
+    }
+
+    applySignedOutUser({ silent: true });
+    render();
+  });
+
+  render();
+}
+
+async function applySignedInUser(email, user = null, options = {}) {
+  authState.currentUser = email;
+  saveAuthState();
+  state = loadState();
+  timer = createDefaultTimer();
+  authPanelCollapsed = true;
+  debugStatus.userEmail = email || "";
+  debugStatus.userId = user?.id || debugStatus.userId || "";
+  await loadTasksFromSupabase(user, { silent: true });
+  if (!options.silent) {
+    render();
+  }
+}
+
+function applySignedOutUser(options = {}) {
+  authState.currentUser = "";
+  saveAuthState();
+  state = JSON.parse(JSON.stringify(defaultState));
+  timer = createDefaultTimer();
+  authPanelCollapsed = false;
+  debugStatus.userEmail = "";
+  debugStatus.userId = "";
+  debugStatus.taskLoadCount = 0;
+  debugStatus.latestSaveStatus = "No task save yet";
+  debugStatus.latestSupabaseError = "None";
+  if (!options.silent) {
+    render();
+  }
+}
+
+async function ensureSupabaseProfile(user) {
+  if (!supabaseClient || !user?.id) {
+    return;
+  }
+
+  const payload = {
+    id: user.id,
+    email: user.email || "",
+    updated_at: new Date().toISOString()
+  };
+
+  const { data: profileData, error: profileError } = await supabaseClient
+    .from("profiles")
+    .upsert(payload, {
+      onConflict: "id"
+    })
+    .select();
+
+  if (profileError) {
+    console.error("Profile upsert error:", profileError);
+    window.alert(`Profile save error: ${profileError.message}`);
+    return;
+  }
+
+  console.log("Profile saved:", profileData);
+}
+
+async function loadTasksFromSupabase(user = null, options = {}) {
+  if (!supabaseClient || !getCurrentUser()) {
+    return;
+  }
+
+  const activeUser = user || await getAuthenticatedSupabaseUser();
+  if (!activeUser?.id) {
+    return;
+  }
+
+  const { data, error } = await supabaseClient
+    .from("tasks")
+    .select("*")
+    .eq("user_id", activeUser.id);
+
+  if (error) {
+    debugStatus.userEmail = activeUser.email || getCurrentUser();
+    debugStatus.userId = activeUser.id || "";
+    debugStatus.latestSupabaseError = error.message;
+    console.error("Task load error:", error);
+    if (!options.silent) {
+      window.alert(`Task load error: ${error.message}`);
+    }
+    return;
+  }
+
+  state.items = (data || []).map(deserializeTaskRecord);
+  debugStatus.userEmail = activeUser.email || getCurrentUser();
+  debugStatus.userId = activeUser.id || "";
+  debugStatus.taskLoadCount = data?.length || 0;
+  debugStatus.latestSupabaseError = "None";
+  saveState();
+}
+
+async function saveTaskToSupabase(item, user = null) {
+  if (!supabaseClient || !getCurrentUser()) {
+    return item;
+  }
+
+  const activeUser = user || await getAuthenticatedSupabaseUser();
+  if (!activeUser?.id) {
+    return item;
+  }
+
+  const payload = {
+    user_id: activeUser.id,
+    title: item.course || item.title || "Study plan",
+    description: serializeTaskDescription(item)
+  };
+
+  const query = item.remoteTaskId
+    ? supabaseClient
+      .from("tasks")
+      .upsert(
+        { id: item.remoteTaskId, ...payload },
+        { onConflict: "id" }
+      )
+      .select()
+    : supabaseClient
+      .from("tasks")
+      .insert(payload)
+      .select();
+
+  const { data, error } = await query;
+
+  if (error) {
+    debugStatus.userEmail = activeUser.email || getCurrentUser();
+    debugStatus.userId = activeUser.id || "";
+    debugStatus.latestSaveStatus = "Task save failed";
+    debugStatus.latestSupabaseError = error.message;
+    console.error("Task save error:", error);
+    window.alert(`Task save error: ${error.message}`);
+    return item;
+  }
+
+  const savedRow = Array.isArray(data) ? data[0] : data;
+  debugStatus.userEmail = activeUser.email || getCurrentUser();
+  debugStatus.userId = activeUser.id || "";
+  debugStatus.latestSaveStatus = `Task saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  debugStatus.latestSupabaseError = "None";
+  debugStatus.taskLoadCount = state.items.length;
+  return savedRow ? deserializeTaskRecord(savedRow) : item;
+}
+
+async function deleteTaskFromSupabase(item, user = null) {
+  if (!supabaseClient || !getCurrentUser() || !item?.remoteTaskId) {
+    return true;
+  }
+
+  const activeUser = user || await getAuthenticatedSupabaseUser();
+  if (!activeUser?.id) {
+    return false;
+  }
+
+  const { error } = await supabaseClient
+    .from("tasks")
+    .delete()
+    .eq("id", item.remoteTaskId)
+    .eq("user_id", activeUser.id);
+
+  if (error) {
+    debugStatus.userEmail = activeUser.email || getCurrentUser();
+    debugStatus.userId = activeUser.id || "";
+    debugStatus.latestSupabaseError = error.message;
+    console.error("Task delete error:", error);
+    window.alert(`Task delete error: ${error.message}`);
+    return false;
+  }
+
+  debugStatus.userEmail = activeUser.email || getCurrentUser();
+  debugStatus.userId = activeUser.id || "";
+  debugStatus.latestSaveStatus = `Task deleted ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  debugStatus.latestSupabaseError = "None";
+  debugStatus.taskLoadCount = Math.max(0, state.items.length - 1);
+  return true;
+}
+
+function serializeTaskDescription(item) {
+  const payload = { ...item };
+  delete payload.remoteTaskId;
+  return JSON.stringify({
+    version: 1,
+    item: payload
+  });
+}
+
+function deserializeTaskRecord(taskRow) {
+  const parsed = parseTaskDescription(taskRow.description);
+  const stored = parsed?.item || {};
+
+  return {
+    id: stored.id || String(taskRow.id || makeId()),
+    remoteTaskId: taskRow.id || stored.remoteTaskId || null,
+    course: stored.course || taskRow.title || "Study plan",
+    title: stored.title || "",
+    type: stored.type || "Study",
+    plannedHours: Number(stored.plannedHours ?? taskRow.planned_hours) || 0,
+    plannedPages: Number(stored.plannedPages) || 0,
+    plannedUnits: Number(stored.plannedUnits) || 0,
+    contentUnitType: normalizeContentUnitType(stored.contentUnitType),
+    customContentLabel: stored.customContentLabel || "",
+    totalContentTarget: Number(stored.totalContentTarget) || 0,
+    weekdayContentTarget: Number(stored.weekdayContentTarget) || 0,
+    weekendContentTarget: Number(stored.weekendContentTarget) || 0,
+    bookPages: Number(stored.bookPages) || 0,
+    dueDate: stored.dueDate || formatDateInputValue(new Date()),
+    repeat: stored.repeat || null,
+    pomodoro: normalizePomodoroSettings(stored.pomodoro),
+    actualHours: Number(stored.actualHours) || 0,
+    actualContent: Number(stored.actualContent ?? stored.actualPages ?? stored.actualUnits) || 0,
+    actualPages: Number(stored.actualPages) || 0,
+    actualUnits: Number(stored.actualUnits) || 0,
+    contentStart: stored.contentStart || "",
+    contentStop: stored.contentStop || "",
+    progress: Number(stored.progress) || 0,
+    completed: Boolean(stored.completed),
+    createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString()
+  };
+}
+
+function parseTaskDescription(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+async function getAuthenticatedSupabaseUser() {
+  if (!supabaseClient) {
+    return null;
+  }
+
+  const { data, error } = await supabaseClient.auth.getUser();
+  if (error) {
+    console.error("Auth user lookup error:", error);
+    debugStatus.latestSupabaseError = error.message;
+    return null;
+  }
+
+  return data.user || null;
+}
+
+async function handleAddItem(event) {
   event.preventDefault();
+  if (plannerSaveStatus) {
+    plannerSaveStatus.className = "save-status full-span pending";
+    plannerSaveStatus.textContent = "Saving plan...";
+  }
   const data = new FormData(form);
   const editingItemId = editingItemIdInput.value;
   const existingItem = state.items.find((item) => item.id === editingItemId);
@@ -261,7 +617,8 @@ function handleAddItem(event) {
       focusMinutes: Number(data.get("itemFocusMinutes")),
       breakMinutes: Number(data.get("itemBreakMinutes")),
       dailyTargetMinutes: Number(data.get("itemDailyTargetMinutes")),
-      alertMode: String(data.get("itemAlertMode") || "")
+      alertMode: String(data.get("itemAlertMode") || ""),
+      alertSound: String(data.get("itemAlertSound") || "")
     }),
     actualHours: existingItem?.actualHours || 0,
     actualContent: existingItem?.actualContent ?? getLegacyActualContent(existingItem),
@@ -282,10 +639,16 @@ function handleAddItem(event) {
   } else {
     state.items.unshift(item);
   }
+  const savedItem = await saveTaskToSupabase(item);
+  state.items = state.items.map((entry) => entry.id === item.id ? savedItem : entry);
   saveState();
   resetPlannerForm();
+  if (plannerSaveStatus) {
+    plannerSaveStatus.className = "save-status full-span saved";
+    plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  }
   if (!timerCourseSelect.value) {
-    timer.selectedItemId = item.id;
+    timer.selectedItemId = savedItem.id;
   }
   render();
 }
@@ -341,12 +704,17 @@ function normalizePomodoroSettings(settings) {
     focusMinutes: clampNumber(settings?.focusMinutes, 5, 120, defaultState.timerSettings.focusMinutes),
     breakMinutes: clampNumber(settings?.breakMinutes, 1, 60, defaultState.timerSettings.breakMinutes),
     dailyTargetMinutes: clampNumber(settings?.dailyTargetMinutes, 10, 720, defaultState.timerSettings.dailyTargetMinutes),
-    alertMode: normalizeAlertMode(settings?.alertMode)
+    alertMode: normalizeAlertMode(settings?.alertMode),
+    alertSound: normalizeAlertSound(settings?.alertSound)
   };
 }
 
 function normalizeAlertMode(value) {
   return ["ring", "vibrate", "both", "off"].includes(value) ? value : "ring";
+}
+
+function normalizeAlertSound(value) {
+  return ["phone", "bell", "chime", "popcorn"].includes(value) ? value : "phone";
 }
 
 function handlePrimaryTimerAction() {
@@ -441,6 +809,10 @@ function completeTimerStage() {
           ? applyCompletedPomodoroToItem(item, activeSettings.focusMinutes)
           : item
       ));
+      const updatedItem = state.items.find((item) => item.id === completedItemId);
+      if (updatedItem) {
+        saveTaskToSupabase(updatedItem);
+      }
     }
 
     saveState();
@@ -496,6 +868,7 @@ function populatePlannerForm(item) {
   form.elements.itemBreakMinutes.value = item.pomodoro?.breakMinutes || 5;
   form.elements.itemDailyTargetMinutes.value = item.pomodoro?.dailyTargetMinutes || 120;
   form.elements.itemAlertMode.value = item.pomodoro?.alertMode || "ring";
+  form.elements.itemAlertSound.value = item.pomodoro?.alertSound || "phone";
   existingPlanIdInput.value = item.id;
   syncCustomContentField();
 }
@@ -566,6 +939,7 @@ function render() {
   renderHeroMetrics();
   renderReports();
   renderTimer();
+  renderDebugPanel();
 }
 
 function renderItems() {
@@ -641,19 +1015,22 @@ function renderItems() {
     contentStartInput.addEventListener("input", refreshContentSummary);
     contentStopInput.addEventListener("input", refreshContentSummary);
 
-    saveButton.addEventListener("click", () => {
+    saveButton.addEventListener("click", async () => {
       const contentStart = Number(contentStartInput.value) || 0;
       const contentStop = Number(contentStopInput.value) || 0;
       const trackedAmount = calculateTrackedAmount(contentStart, contentStop);
+      let updatedItem = null;
       state.items = state.items.map((entry) => (
         entry.id === item.id
-          ? buildUpdatedProgressItem(entry, {
-              contentStart,
-              contentStop,
-              trackedAmount
-            })
+          ? (updatedItem = buildUpdatedProgressItem(entry, {
+            contentStart,
+            contentStop,
+            trackedAmount
+          }))
           : entry
       ));
+      updatedItem = await saveTaskToSupabase(updatedItem || item);
+      state.items = state.items.map((entry) => entry.id === item.id ? updatedItem : entry);
       saveFeedbackByItemId[item.id] = {
         tone: "saved",
         text: `Saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
@@ -662,7 +1039,11 @@ function renderItems() {
       render();
     });
 
-    deleteButton.addEventListener("click", () => {
+    deleteButton.addEventListener("click", async () => {
+      const deleteAllowed = await deleteTaskFromSupabase(item);
+      if (!deleteAllowed) {
+        return;
+      }
       state.items = state.items.filter((entry) => entry.id !== item.id);
       saveState();
       render();
@@ -674,6 +1055,27 @@ function renderItems() {
 
     itemsList.appendChild(fragment);
   });
+}
+
+function renderDebugPanel() {
+  if (!debugGrid) {
+    return;
+  }
+
+  const cards = [
+    { label: "Signed-in user email", value: debugStatus.userEmail || "Not signed in" },
+    { label: "Signed-in user id", value: debugStatus.userId || "Unknown" },
+    { label: "Task load count", value: String(debugStatus.taskLoadCount ?? 0) },
+    { label: "Latest save status", value: debugStatus.latestSaveStatus || "No task save yet" },
+    { label: "Latest Supabase error", value: debugStatus.latestSupabaseError || "None" }
+  ];
+
+  debugGrid.innerHTML = cards.map((card) => `
+    <div class="debug-card">
+      <span>${escapeHtml(card.label)}</span>
+      <strong>${escapeHtml(card.value)}</strong>
+    </div>
+  `).join("");
 }
 
 function normalizeContentUnitType(value) {
@@ -1073,33 +1475,53 @@ function getTrendData(view) {
 }
 
 function ringCompletionBell() {
+  playPhoneRing();
+}
+
+function playPhoneRing() {
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextClass) return;
 
   try {
     const context = new AudioContextClass();
-    const pattern = [
-      { frequency: 740, start: 0, duration: 0.38, gain: 0.3 },
-      { frequency: 880, start: 0.48, duration: 0.38, gain: 0.32 },
-      { frequency: 740, start: 1.0, duration: 0.38, gain: 0.3 },
-      { frequency: 988, start: 1.48, duration: 0.5, gain: 0.34 },
-      { frequency: 740, start: 2.18, duration: 0.38, gain: 0.3 },
-      { frequency: 880, start: 2.66, duration: 0.38, gain: 0.32 },
-      { frequency: 1047, start: 3.14, duration: 0.62, gain: 0.36 }
-    ];
+    const masterGain = context.createGain();
+    masterGain.gain.setValueAtTime(0.001, context.currentTime);
+    masterGain.connect(context.destination);
 
-    pattern.forEach((tone) => {
+    // Classic telephone-style dual-tone ring: two frequencies pulsed in bursts.
+    const carriers = [440, 480].map((frequency) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(tone.frequency, context.currentTime + tone.start);
-      gain.gain.setValueAtTime(0.001, context.currentTime + tone.start);
-      gain.gain.exponentialRampToValueAtTime(tone.gain, context.currentTime + tone.start + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + tone.start + tone.duration);
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, context.currentTime);
+      gain.gain.setValueAtTime(0.5, context.currentTime);
       oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start(context.currentTime + tone.start);
-      oscillator.stop(context.currentTime + tone.start + tone.duration);
+      gain.connect(masterGain);
+      oscillator.start(context.currentTime);
+      return oscillator;
+    });
+
+    const pulsePattern = [
+      { start: 0.0, duration: 0.35, gain: 0.34 },
+      { start: 0.45, duration: 0.35, gain: 0.34 },
+      { start: 1.3, duration: 0.35, gain: 0.38 },
+      { start: 1.75, duration: 0.35, gain: 0.38 },
+      { start: 2.65, duration: 0.4, gain: 0.42 },
+      { start: 3.15, duration: 0.4, gain: 0.42 }
+    ];
+
+    pulsePattern.forEach((pulse) => {
+      const attack = context.currentTime + pulse.start;
+      const release = attack + pulse.duration;
+      masterGain.gain.cancelScheduledValues(attack);
+      masterGain.gain.setValueAtTime(0.001, attack);
+      masterGain.gain.exponentialRampToValueAtTime(pulse.gain, attack + 0.02);
+      masterGain.gain.exponentialRampToValueAtTime(0.001, release);
+    });
+
+    const stopAt = context.currentTime + 4.2;
+    carriers.forEach((oscillator) => {
+      oscillator.stop(stopAt);
     });
 
     window.setTimeout(() => {
@@ -1110,20 +1532,110 @@ function ringCompletionBell() {
   }
 }
 
+function playBellRing() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  try {
+    const context = new AudioContextClass();
+    [0, 0.45, 0.95].forEach((start, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880 + (index * 80), context.currentTime + start);
+      gain.gain.setValueAtTime(0.001, context.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.28, context.currentTime + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + start + 0.8);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(context.currentTime + start);
+      oscillator.stop(context.currentTime + start + 0.8);
+    });
+    window.setTimeout(() => context.close(), 2200);
+  } catch (error) {
+    return;
+  }
+}
+
+function playChimeRing() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  try {
+    const context = new AudioContextClass();
+    const notes = [659, 784, 988];
+    notes.forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(frequency, context.currentTime + (index * 0.22));
+      gain.gain.setValueAtTime(0.001, context.currentTime + (index * 0.22));
+      gain.gain.exponentialRampToValueAtTime(0.24, context.currentTime + (index * 0.22) + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + (index * 0.22) + 0.45);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(context.currentTime + (index * 0.22));
+      oscillator.stop(context.currentTime + (index * 0.22) + 0.45);
+    });
+    window.setTimeout(() => context.close(), 1400);
+  } catch (error) {
+    return;
+  }
+}
+
+function playPopcornRing() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  try {
+    const context = new AudioContextClass();
+    const pops = [0, 0.12, 0.26, 0.44, 0.68, 0.96, 1.28, 1.66];
+    pops.forEach((start, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.setValueAtTime(560 + ((index % 3) * 110), context.currentTime + start);
+      gain.gain.setValueAtTime(0.001, context.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + start + 0.08);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(context.currentTime + start);
+      oscillator.stop(context.currentTime + start + 0.08);
+    });
+    window.setTimeout(() => context.close(), 2200);
+  } catch (error) {
+    return;
+  }
+}
+
 function vibrateCompletionAlert() {
   if (!("vibrate" in navigator)) return;
   navigator.vibrate([250, 140, 250]);
 }
 
-function runCompletionAlert() {
-  const alertMode = normalizeAlertMode(getActiveTimerSettings().alertMode);
+function runCompletionAlert(settings = getActiveTimerSettings()) {
+  const alertMode = normalizeAlertMode(settings.alertMode);
+  const alertSound = normalizeAlertSound(settings.alertSound);
   if (alertMode === "off") return;
   if (alertMode === "ring" || alertMode === "both") {
-    ringCompletionBell();
+    if (alertSound === "bell") {
+      playBellRing();
+    } else if (alertSound === "chime") {
+      playChimeRing();
+    } else if (alertSound === "popcorn") {
+      playPopcornRing();
+    } else {
+      playPhoneRing();
+    }
   }
   if (alertMode === "vibrate" || alertMode === "both") {
     vibrateCompletionAlert();
   }
+}
+
+function testCurrentAlert() {
+  runCompletionAlert(getActiveTimerSettings());
 }
 
 function renderTimer() {
@@ -1181,7 +1693,8 @@ function renderTimerSettingsSummary() {
     { label: "Focus mins", value: settings.focusMinutes },
     { label: "Break mins", value: settings.breakMinutes },
     { label: "Daily target", value: `${settings.dailyTargetMinutes} mins` },
-    { label: "Alert", value: settings.alertMode.charAt(0).toUpperCase() + settings.alertMode.slice(1) }
+    { label: "Alert", value: settings.alertMode.charAt(0).toUpperCase() + settings.alertMode.slice(1) },
+    { label: "Sound", value: settings.alertSound.charAt(0).toUpperCase() + settings.alertSound.slice(1) }
   ].map((entry) => `
     <div class="timer-setting-card">
       <span>${entry.label}</span>
@@ -1847,15 +2360,30 @@ function focusMainApp() {
   appShell.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function normalizeUsername(value) {
-  return String(value || "").trim().toLowerCase();
+function createSupabaseClient() {
+  const url = String(supabaseConfig.url || "").trim();
+  const anonKey = String(supabaseConfig.anonKey || "").trim();
+  const supabaseFactory = window.supabase?.createClient;
+
+  if (!url || !anonKey || typeof supabaseFactory !== "function") {
+    return null;
+  }
+
+  return supabaseFactory(url, anonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true
+    }
+  });
 }
 
-function findStoredUser(username) {
-  const normalizedUsername = normalizeUsername(username);
-  return authState.users.find((entry) => (
-    normalizeUsername(entry.loginKey || entry.username) === normalizedUsername
-  ));
+function getPasswordResetRedirect() {
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    return window.location.href;
+  }
+
+  return "";
 }
 
 function escapeHtml(value) {
