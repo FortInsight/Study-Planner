@@ -58,9 +58,19 @@
               <p class="eyebrow">Study Planner</p>
               <p class="signed-in-copy">Signed in as <strong id="currentUsername">Student</strong></p>
             </div>
-            <div class="account-actions">
+            <div class="account-controls">
+              <div class="profile-name-editor" id="profileNameEditor">
+                <label class="profile-name-field">
+                  Name
+                  <input type="text" id="profileNameInput" placeholder="Your name">
+                </label>
+                <button type="button" class="secondary-btn small-btn" id="saveProfileNameButton">Save name</button>
+                <span class="profile-name-status" id="profileNameStatus" aria-live="polite"></span>
+              </div>
+              <div class="account-actions">
               <button type="button" class="ghost-btn" id="authToggleButton">Sign in</button>
               <button type="button" class="ghost-btn" id="logoutButton">Log out</button>
+              </div>
             </div>
           </div>
           <h1>Plan your courses, study smarter, and see your progress grow.</h1>

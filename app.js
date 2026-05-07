@@ -48,6 +48,10 @@ const currentUsername = document.getElementById("currentUsername");
 const authToggleButton = document.getElementById("authToggleButton");
 const logoutButton = document.getElementById("logoutButton");
 const forgotPasswordButton = document.getElementById("forgotPasswordButton");
+const profileNameEditor = document.getElementById("profileNameEditor");
+const profileNameInput = document.getElementById("profileNameInput");
+const saveProfileNameButton = document.getElementById("saveProfileNameButton");
+const profileNameStatus = document.getElementById("profileNameStatus");
 const form = document.getElementById("plannerForm");
 const editingItemIdInput = document.getElementById("editingItemId");
 const existingPlanField = document.getElementById("existingPlanField");
@@ -94,6 +98,7 @@ let trendView = "week";
 let viewCursor = startOfDay(new Date());
 let trendCursor = startOfDay(new Date());
 let saveFeedbackByItemId = {};
+let profileDisplayName = "";
 let debugStatus = {
   userEmail: "",
   userId: "",
@@ -110,6 +115,7 @@ document.getElementById("registerButton").addEventListener("click", handleRegist
 forgotPasswordButton.addEventListener("click", handleForgotPassword);
 authToggleButton.addEventListener("click", toggleAuthPanel);
 logoutButton.addEventListener("click", handleLogout);
+saveProfileNameButton.addEventListener("click", handleProfileNameSave);
 form.addEventListener("submit", handleAddItem);
 existingPlanIdInput.addEventListener("change", handleExistingPlanSelection);
 createPlanModeButton.addEventListener("click", setCreatePlanMode);
@@ -273,6 +279,38 @@ async function handleForgotPassword() {
     : "Password reset email sent. Reset links work best when this app runs from localhost or a hosted URL.";
 }
 
+async function handleProfileNameSave() {
+  if (!supabaseClient || !getCurrentUser()) {
+    return;
+  }
+
+  const nextName = String(profileNameInput?.value || "").trim();
+  if (!profileNameStatus) {
+    return;
+  }
+
+  profileNameStatus.className = "profile-name-status pending";
+  profileNameStatus.textContent = "Saving name...";
+
+  const { data, error } = await supabaseClient.auth.updateUser({
+    data: {
+      full_name: nextName,
+      display_name: nextName
+    }
+  });
+
+  if (error) {
+    profileNameStatus.className = "profile-name-status pending";
+    profileNameStatus.textContent = error.message;
+    return;
+  }
+
+  profileDisplayName = getDisplayNameFromUser(data.user);
+  profileNameStatus.className = "profile-name-status saved";
+  profileNameStatus.textContent = nextName ? "Name saved" : "Name cleared";
+  render();
+}
+
 async function handleLogout() {
   pauseTimer();
   if (!supabaseClient) {
@@ -348,6 +386,7 @@ async function applySignedInUser(email, user = null, options = {}) {
   state = loadState();
   timer = createDefaultTimer();
   authPanelCollapsed = true;
+  profileDisplayName = getDisplayNameFromUser(user);
   debugStatus.userEmail = email || "";
   debugStatus.userId = user?.id || debugStatus.userId || "";
   await loadTasksFromSupabase(user, { silent: true });
@@ -362,6 +401,7 @@ function applySignedOutUser(options = {}) {
   state = JSON.parse(JSON.stringify(defaultState));
   timer = createDefaultTimer();
   authPanelCollapsed = false;
+  profileDisplayName = "";
   debugStatus.userEmail = "";
   debugStatus.userId = "";
   debugStatus.taskLoadCount = 0;
@@ -370,6 +410,20 @@ function applySignedOutUser(options = {}) {
   if (!options.silent) {
     render();
   }
+}
+
+function getDisplayNameFromUser(user) {
+  const fullName = String(user?.user_metadata?.full_name || "").trim();
+  if (fullName) {
+    return fullName;
+  }
+
+  const displayName = String(user?.user_metadata?.display_name || "").trim();
+  if (displayName) {
+    return displayName;
+  }
+
+  return "";
 }
 
 async function ensureSupabaseProfile(user) {
@@ -920,10 +974,20 @@ function render() {
   const signedInUser = getCurrentUser();
   const isSignedIn = Boolean(signedInUser);
   authShell.classList.toggle("collapsed", authPanelCollapsed);
-  currentUsername.textContent = signedInUser || "Guest";
+  currentUsername.textContent = profileDisplayName || signedInUser || "Guest";
   authToggleButton.hidden = isSignedIn;
   authToggleButton.textContent = authPanelCollapsed ? "Show sign in" : "Hide sign in";
   logoutButton.hidden = !isSignedIn;
+  if (profileNameEditor) {
+    profileNameEditor.hidden = !isSignedIn;
+  }
+  if (profileNameInput && document.activeElement !== profileNameInput) {
+    profileNameInput.value = profileDisplayName || "";
+  }
+  if (!isSignedIn && profileNameStatus) {
+    profileNameStatus.textContent = "";
+    profileNameStatus.className = "profile-name-status";
+  }
 
   syncTimerClock();
   if (timer.running) {

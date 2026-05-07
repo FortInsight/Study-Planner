@@ -99,6 +99,46 @@ body {
   flex-wrap: wrap;
 }
 
+.account-controls {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.profile-name-editor {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: end;
+}
+
+.profile-name-field {
+  display: grid;
+  gap: 4px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.profile-name-field input {
+  min-width: 180px;
+  padding: 8px 10px;
+}
+
+.profile-name-status {
+  min-height: 1.2em;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.profile-name-status.saved {
+  color: var(--teal);
+}
+
+.profile-name-status.pending {
+  color: var(--accent);
+}
+
 .hero {
   display: grid;
   grid-template-columns: 1.35fr 1fr;
@@ -857,7 +897,9 @@ button:hover {
 
   .account-bar,
   .auth-actions,
-  .account-actions {
+  .account-actions,
+  .account-controls,
+  .profile-name-editor {
     display: grid;
   }
 
