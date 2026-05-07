@@ -1,0 +1,24 @@
+{
+  "name": "Study Planner",
+  "short_name": "Study Planner",
+  "description": "Plan study sessions, track Pomodoro focus time, and review your learning progress.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#081a38",
+  "theme_color": "#081a38",
+  "icons": [
+    {
+      "src": "./icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
