@@ -685,7 +685,10 @@ function hydrateSharedPlannerStateFromUser(user) {
   }
 
   if (Array.isArray(sharedState.deletedItemIds)) {
-    state.deletedItemIds = sharedState.deletedItemIds;
+    // Merge remote deletedItemIds with local ones — never replace, so a
+    // locally-deleted item can't be resurrected by stale remote metadata.
+    const merged = [...new Set([...state.deletedItemIds, ...sharedState.deletedItemIds])];
+    state.deletedItemIds = merged;
   }
 
   if (sharedState.timerSettings) {
@@ -1187,7 +1190,12 @@ async function handleAddItem(event) {
       timer.selectedItemId = savedItem.id;
     }
     render();
-    void refreshTasksFromSupabase({ renderAfter: true });
+    // Delay the refresh slightly so Supabase has time to index the newly
+    // inserted row — without this, an immediate re-fetch can return stale
+    // results that don't yet include the new item, causing it to disappear.
+    window.setTimeout(() => {
+      void refreshTasksFromSupabase({ renderAfter: true });
+    }, 800);
   } catch (error) {
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span pending";
@@ -1240,6 +1248,10 @@ async function handleDeletePlanFromEditor() {
       return;
     }
 
+    // Immediately persist deletedItemIds to Supabase user metadata so it
+    // survives a refresh — otherwise hydrateSharedPlannerStateFromUser can
+    // restore the old list and make the deleted item reappear.
+    void syncSharedPlannerStateToSupabase();
     void refreshTasksFromSupabase({ renderAfter: true });
   }).catch(() => {
     state.items = previousItems;
@@ -1811,6 +1823,10 @@ function renderItems() {
           render();
           return;
         }
+        // Immediately persist deletedItemIds to Supabase user metadata so it
+        // survives a refresh — otherwise hydrateSharedPlannerStateFromUser can
+        // restore the old list and make the deleted item reappear.
+        void syncSharedPlannerStateToSupabase();
         void refreshTasksFromSupabase({ renderAfter: true });
       } catch (error) {
         state.items = previousItems;
@@ -3313,4 +3329,3 @@ function makeId() {
   }
   return `item-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
-
