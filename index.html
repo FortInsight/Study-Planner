@@ -21,97 +21,62 @@
 </head>
 <body>
   <div class="page-shell">
-    <section class="auth-shell" id="authShell">
-      <div class="panel auth-panel">
-        <div class="section-heading auth-heading">
-          <div>
-            <p class="eyebrow">Welcome</p>
-            <h1>Sign in to your study planner</h1>
-          </div>
-          <p class="section-note">Use your email and password to sign in with Supabase and stay signed in on this device until you log out.</p>
+    <div class="login-reveal" id="loginReveal" hidden>
+      <button type="button" class="ghost-btn" id="showLoginButton">Show login</button>
+    </div>
+    <section class="top-shell" id="topShell">
+      <section class="auth-shell" id="authShell">
+        <div class="panel auth-panel">
+          <form id="authForm" class="auth-form" autocomplete="on">
+            <div class="auth-intro">
+              <p class="eyebrow">Study Planner</p>
+              <h1>Sign in to open your study planner.</h1>
+              <p class="auth-copy">Plan your study time, stay focused, and track progress in one place.</p>
+            </div>
+            <div class="auth-fields">
+              <label class="full-span">
+                User name
+                <input type="text" name="profileName" id="profileNameInput" placeholder="Enter your user name" autocomplete="name">
+              </label>
+              <label>
+                Email
+                <input type="email" name="email" id="authEmail" placeholder="Enter your email" autocomplete="email username" inputmode="email" required>
+              </label>
+              <label>
+                Password
+                <input type="password" name="password" id="authPassword" placeholder="Enter password" autocomplete="current-password" enterkeyhint="go" required>
+              </label>
+              <div class="auth-actions full-span">
+                <button type="button" class="primary-btn" id="registerButton">Sign up</button>
+                <button type="submit" class="primary-btn" id="loginButton">Login</button>
+                <button type="button" class="ghost-btn" id="forgotPasswordButton">Forgot password?</button>
+                <button type="button" class="ghost-btn" id="hideLoginButton">Hide login</button>
+              </div>
+            </div>
+            <span class="profile-name-status" id="profileNameStatus" aria-live="polite"></span>
+            <p class="auth-message" id="authMessage">Sign in or create an account to continue.</p>
+          </form>
         </div>
-
-        <form id="authForm" class="auth-form" autocomplete="on">
-          <label>
-            Email
-            <input type="email" name="email" id="authEmail" placeholder="you@example.com" autocomplete="email username" inputmode="email" required>
-          </label>
-          <label>
-            Password
-            <input type="password" name="password" id="authPassword" placeholder="Enter password" autocomplete="current-password" enterkeyhint="go" required>
-          </label>
-          <div class="auth-actions">
-            <button type="submit" class="primary-btn" id="loginButton">Sign in</button>
-            <button type="button" class="ghost-btn" id="registerButton">Create account</button>
-            <button type="button" class="ghost-btn" id="forgotPasswordButton">Forgot password</button>
-          </div>
-          <p class="auth-message" id="authMessage">Use your existing email account or create a new one to start planning. Press Enter after your password to sign in.</p>
-        </form>
-      </div>
+      </section>
     </section>
 
-    <div id="appShell">
-      <header class="hero" id="overviewSection">
-        <div class="hero-copy">
-          <div class="account-bar">
-            <div>
-              <p class="eyebrow">Study Planner</p>
-              <p class="signed-in-copy">Signed in as <strong id="currentUsername">Student</strong></p>
-            </div>
-            <div class="account-controls">
-              <div class="profile-name-editor" id="profileNameEditor">
-                <label class="profile-name-field">
-                  Name
-                  <input type="text" id="profileNameInput" placeholder="Your name">
-                </label>
-                <button type="button" class="secondary-btn small-btn" id="saveProfileNameButton">Save name</button>
-                <span class="profile-name-status" id="profileNameStatus" aria-live="polite"></span>
-              </div>
-              <div class="account-actions">
-              <button type="button" class="ghost-btn" id="authToggleButton">Sign in</button>
-              <button type="button" class="ghost-btn" id="logoutButton">Log out</button>
-              </div>
-            </div>
-          </div>
-          <h1>Plan your courses, study smarter, and see your progress grow.</h1>
-          <p class="hero-text">
-            Organize hours, pages, assignments, projects, and exams in one place. Track focused time with a Pomodoro timer and review your daily, weekly, monthly, and yearly performance.
-          </p>
+    <div id="appShell" hidden>
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Study Planner</p>
+          <p class="app-header-title">Welcome, <strong id="currentUsername">Student</strong></p>
+          <p class="app-header-date" id="headerPlanDate">Today</p>
         </div>
-        <div class="hero-metrics" id="heroMetrics"></div>
+        <div class="app-header-actions">
+          <button type="button" class="ghost-btn" id="logoutButton">Sign out</button>
+        </div>
       </header>
-
       <nav class="section-nav" aria-label="Section navigation">
-        <a href="#overviewSection" class="section-nav-link">Overview</a>
-        <a href="#timelineSection" class="section-nav-link">Plan Window</a>
         <a href="#plannerSection" class="section-nav-link">Planner</a>
         <a href="#timerSection" class="section-nav-link">Timer</a>
         <a href="#tasksSection" class="section-nav-link">Tasks</a>
         <a href="#reportsSection" class="section-nav-link">Reports</a>
       </nav>
-
-      <section class="panel timeline-panel" id="timelineSection">
-        <div class="section-heading timeline-heading">
-          <div>
-            <p class="eyebrow">Plan Window</p>
-            <h2 id="planWindowTitle">Today</h2>
-          </div>
-          <div class="timeline-side">
-            <div class="timeline-nav" id="timelineNav">
-              <button type="button" class="ghost-btn small-btn" id="timelinePrevButton">Previous</button>
-              <button type="button" class="ghost-btn small-btn" id="timelineNextButton">Next</button>
-            </div>
-            <p class="section-note" id="planWindowSubtitle">Viewing items due today.</p>
-          </div>
-        </div>
-        <div class="timeline-controls" id="timelineControls">
-          <button type="button" class="timeline-btn active" data-view="today">Today</button>
-          <button type="button" class="timeline-btn" data-view="tomorrow">Tomorrow</button>
-          <button type="button" class="timeline-btn" data-view="month">Month</button>
-          <button type="button" class="timeline-btn" data-view="year">Year</button>
-          <button type="button" class="timeline-btn" data-view="all">All</button>
-        </div>
-      </section>
 
       <main class="layout">
         <section class="panel planner-panel" id="plannerSection">
@@ -271,12 +236,23 @@
               <h2 id="upcomingWindowTitle">Upcoming work</h2>
             </div>
             <div class="upcoming-side">
+              <div class="timeline-nav" id="timelineNav">
+                <button type="button" class="ghost-btn small-btn" id="timelinePrevButton">Previous</button>
+                <button type="button" class="ghost-btn small-btn" id="timelineNextButton">Next</button>
+              </div>
               <label class="date-filter-field">
                 Choose date
                 <input type="date" id="upcomingDateFilter">
               </label>
               <p class="section-note" id="upcomingWindowSubtitle">Update your actual hours and pages as you make progress.</p>
             </div>
+          </div>
+          <div class="timeline-controls" id="timelineControls">
+            <button type="button" class="timeline-btn active" data-view="today">Today</button>
+            <button type="button" class="timeline-btn" data-view="tomorrow">Tomorrow</button>
+            <button type="button" class="timeline-btn" data-view="month">Month</button>
+            <button type="button" class="timeline-btn" data-view="year">Year</button>
+            <button type="button" class="timeline-btn" data-view="all">All</button>
           </div>
 
           <div id="itemsList" class="item-grid"></div>
@@ -319,14 +295,6 @@
               <p>How much of your planned study time has been achieved in the current view.</p>
             </div>
             <div id="typeBreakdown" class="achievement-doughnut-wrap"></div>
-          </div>
-
-          <div class="chart-wrap debug-panel" id="debugPanel">
-            <div>
-              <h3>Temporary debug status</h3>
-              <p>Local Supabase connection details for testing only.</p>
-            </div>
-            <div class="debug-grid" id="debugGrid"></div>
           </div>
         </section>
       </main>

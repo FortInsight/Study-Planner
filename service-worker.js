@@ -1,9 +1,10 @@
-const CACHE_NAME = "study-planner-pwa-v1";
+const CACHE_NAME = "study-planner-pwa-v2";
 const APP_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./custom-alert.wav",
   "./manifest.webmanifest",
   "./icons/icon-192.svg",
   "./icons/icon-512.svg"

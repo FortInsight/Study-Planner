@@ -1,6 +1,8 @@
 ﻿const STORAGE_KEY = "study-planner-dashboard-v1";
 
 const AUTH_STORAGE_KEY = "study-planner-auth-v1";
+const SUPABASE_SESSION_STORAGE_KEY = "study-planner-supabase-session-v1";
+const CUSTOM_ALERT_SRC = "custom-alert.wav";
 const supabaseConfig = window.SUPABASE_CONFIG || {};
 const supabaseClient = createSupabaseClient();
 
@@ -37,18 +39,21 @@ function createDefaultTimer() {
 let authState = loadAuthState();
 let state = loadState();
 let timer = createDefaultTimer();
+let activeAlertAudio = null;
 
 const authShell = document.getElementById("authShell");
+const topShell = document.getElementById("topShell");
+const loginReveal = document.getElementById("loginReveal");
+const showLoginButton = document.getElementById("showLoginButton");
+const hideLoginButton = document.getElementById("hideLoginButton");
 const appShell = document.getElementById("appShell");
 const authForm = document.getElementById("authForm");
 const authEmailInput = document.getElementById("authEmail");
 const authPasswordInput = document.getElementById("authPassword");
 const authMessage = document.getElementById("authMessage");
 const currentUsername = document.getElementById("currentUsername");
-const authToggleButton = document.getElementById("authToggleButton");
 const logoutButton = document.getElementById("logoutButton");
 const forgotPasswordButton = document.getElementById("forgotPasswordButton");
-const profileNameEditor = document.getElementById("profileNameEditor");
 const profileNameInput = document.getElementById("profileNameInput");
 const saveProfileNameButton = document.getElementById("saveProfileNameButton");
 const profileNameStatus = document.getElementById("profileNameStatus");
@@ -59,9 +64,9 @@ const existingPlanIdInput = document.getElementById("existingPlanId");
 const createPlanModeButton = document.getElementById("createPlanModeButton");
 const updatePlanModeButton = document.getElementById("updatePlanModeButton");
 const savePlanButton = document.getElementById("savePlanButton");
+const layout = document.querySelector(".layout");
 const plannerSaveStatus = document.getElementById("plannerSaveStatus");
 const itemsList = document.getElementById("itemsList");
-const heroMetrics = document.getElementById("heroMetrics");
 const reportCards = document.getElementById("reportCards");
 const focusTrend = document.getElementById("focusTrend");
 const focusTrendSubtitle = document.getElementById("focusTrendSubtitle");
@@ -76,8 +81,11 @@ const testAlertButton = document.getElementById("testAlertButton");
 const resetTimerButton = document.getElementById("resetTimer");
 const todayProgressText = document.getElementById("todayProgressText");
 const todayProgressBar = document.getElementById("todayProgressBar");
-const planWindowTitle = document.getElementById("planWindowTitle");
-const planWindowSubtitle = document.getElementById("planWindowSubtitle");
+const headerPlanDate = document.getElementById("headerPlanDate");
+const sectionNavLinks = [...document.querySelectorAll(".section-nav-link")];
+const pageSections = sectionNavLinks
+  .map((link) => document.querySelector(link.getAttribute("href") || ""))
+  .filter(Boolean);
 const timelineControls = document.getElementById("timelineControls");
 const timelinePrevButton = document.getElementById("timelinePrevButton");
 const timelineNextButton = document.getElementById("timelineNextButton");
@@ -89,16 +97,21 @@ const upcomingWindowEyebrow = document.getElementById("upcomingWindowEyebrow");
 const upcomingWindowTitle = document.getElementById("upcomingWindowTitle");
 const upcomingWindowSubtitle = document.getElementById("upcomingWindowSubtitle");
 const upcomingDateFilter = document.getElementById("upcomingDateFilter");
-const debugGrid = document.getElementById("debugGrid");
 
 let activeView = "today";
-let authPanelCollapsed = Boolean(getCurrentUser());
+let authPanelCollapsed = false;
 let planEditorMode = "create";
 let trendView = "week";
 let viewCursor = startOfDay(new Date());
 let trendCursor = startOfDay(new Date());
 let saveFeedbackByItemId = {};
 let profileDisplayName = "";
+let sharedStateSyncTimeout = null;
+let activePageHash = "#tasksSection";
+let topShellHidden = false;
+let hasActiveSession = false;
+let currentSessionUser = null;
+let isInitializingAuth = false;
 let debugStatus = {
   userEmail: "",
   userId: "",
@@ -113,9 +126,10 @@ resetTimerButton.addEventListener("click", resetTimer);
 authForm.addEventListener("submit", handleLogin);
 document.getElementById("registerButton").addEventListener("click", handleRegister);
 forgotPasswordButton.addEventListener("click", handleForgotPassword);
-authToggleButton.addEventListener("click", toggleAuthPanel);
 logoutButton.addEventListener("click", handleLogout);
-saveProfileNameButton.addEventListener("click", handleProfileNameSave);
+saveProfileNameButton?.addEventListener("click", handleProfileNameSave);
+hideLoginButton?.addEventListener("click", hideTopShell);
+showLoginButton?.addEventListener("click", showTopShell);
 form.addEventListener("submit", handleAddItem);
 existingPlanIdInput.addEventListener("change", handleExistingPlanSelection);
 createPlanModeButton.addEventListener("click", setCreatePlanMode);
@@ -130,19 +144,26 @@ contentUnitTypeInput.addEventListener("change", syncCustomContentField);
 focusTrendDateFilter.addEventListener("change", handleFocusTrendDateFilterChange);
 document.addEventListener("visibilitychange", handleTimerVisibilityChange);
 window.addEventListener("focus", handleTimerVisibilityChange);
+window.addEventListener("hashchange", syncSectionNavFromHash);
 
 registerServiceWorker();
+if (authEmailInput && authState.lastEmail) {
+  authEmailInput.value = authState.lastEmail;
+}
 initializeAuth();
+initializeSectionNavigation();
 
 function loadAuthState() {
   try {
     const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
     return {
-      currentUser: stored?.currentUser ?? ""
+      currentUser: stored?.currentUser ?? "",
+      lastEmail: stored?.lastEmail ?? ""
     };
   } catch (error) {
     return {
-      currentUser: ""
+      currentUser: "",
+      lastEmail: ""
     };
   }
 }
@@ -170,10 +191,41 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(getPlannerStorageKey(), JSON.stringify(state));
+  scheduleSharedStateSync();
 }
 
 function saveAuthState() {
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authState));
+}
+
+function saveSupabaseSession(session) {
+  if (!session?.access_token || !session?.refresh_token) {
+    return;
+  }
+
+  localStorage.setItem(SUPABASE_SESSION_STORAGE_KEY, JSON.stringify({
+    access_token: session.access_token,
+    refresh_token: session.refresh_token
+  }));
+}
+
+function loadSupabaseSession() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SUPABASE_SESSION_STORAGE_KEY));
+    if (!stored?.access_token || !stored?.refresh_token) {
+      return null;
+    }
+    return {
+      access_token: stored.access_token,
+      refresh_token: stored.refresh_token
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+function clearSupabaseSession() {
+  localStorage.removeItem(SUPABASE_SESSION_STORAGE_KEY);
 }
 
 async function handleRegister() {
@@ -183,6 +235,7 @@ async function handleRegister() {
   }
 
   const email = authEmailInput.value.trim();
+  const enteredName = String(profileNameInput?.value || "").trim();
   const password = authPasswordInput.value.trim();
 
   if (!email || !password) {
@@ -191,9 +244,17 @@ async function handleRegister() {
   }
 
   authMessage.textContent = "Creating your account...";
+  authState.lastEmail = email;
+  saveAuthState();
   const { data, error } = await supabaseClient.auth.signUp({
     email,
-    password
+    password,
+    options: {
+      data: {
+        full_name: enteredName,
+        display_name: enteredName
+      }
+    }
   });
 
   if (error) {
@@ -202,10 +263,12 @@ async function handleRegister() {
   }
 
   if (data.session?.user?.email) {
-    await ensureSupabaseProfile(data.session.user);
+    saveSupabaseSession(data.session);
     await applySignedInUser(data.session.user.email, data.session.user);
+    void ensureSupabaseProfile(data.session.user);
     authMessage.textContent = "Account created and signed in.";
     authForm.reset();
+    authEmailInput.value = authState.lastEmail || data.session.user.email || "";
     focusMainApp();
     return;
   }
@@ -223,6 +286,7 @@ async function handleLogin(event) {
 
   const data = new FormData(authForm);
   const email = String(data.get("email") || "").trim();
+  const enteredName = String(data.get("profileName") || "").trim();
   const password = String(data.get("password") || "").trim();
 
   if (!email || !password) {
@@ -231,21 +295,49 @@ async function handleLogin(event) {
   }
 
   authMessage.textContent = "Signing you in...";
-  const { data: signInData, error } = await supabaseClient.auth.signInWithPassword({
-    email,
-    password
-  });
+  authState.lastEmail = email;
+  saveAuthState();
 
-  if (error) {
-    authMessage.textContent = error.message;
-    return;
+  try {
+    const { data: signInData, error } = await supabaseClient.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (error) {
+      authMessage.textContent = error.message;
+      return;
+    }
+
+    const signedInUser = signInData?.user;
+    if (!signedInUser) {
+      authMessage.textContent = "Sign in did not complete. Please try again.";
+      return;
+    }
+
+    if (signInData?.session) {
+      saveSupabaseSession(signInData.session);
+    }
+    await applySignedInUser(signedInUser.email || email, signedInUser);
+    void ensureSupabaseProfile(signedInUser);
+
+    if (enteredName) {
+      try {
+        void updateProfileNameMetadata(enteredName);
+        profileDisplayName = enteredName;
+      } catch (profileError) {
+        console.error("Profile name update error:", profileError);
+        debugStatus.latestSupabaseError = profileError?.message || "Profile name update failed";
+      }
+    }
+
+    authMessage.textContent = "Signed in.";
+    authForm.reset();
+    authEmailInput.value = authState.lastEmail || signedInUser.email || email;
+    focusMainApp();
+  } catch (error) {
+    authMessage.textContent = error?.message || "We could not sign you in right now.";
   }
-
-  await ensureSupabaseProfile(signInData.user);
-  await applySignedInUser(signInData.user?.email || email, signInData.user);
-  authMessage.textContent = "Signed in.";
-  authForm.reset();
-  focusMainApp();
 }
 
 async function handleForgotPassword() {
@@ -292,12 +384,7 @@ async function handleProfileNameSave() {
   profileNameStatus.className = "profile-name-status pending";
   profileNameStatus.textContent = "Saving name...";
 
-  const { data, error } = await supabaseClient.auth.updateUser({
-    data: {
-      full_name: nextName,
-      display_name: nextName
-    }
-  });
+  const { data, error } = await updateProfileNameMetadata(nextName);
 
   if (error) {
     profileNameStatus.className = "profile-name-status pending";
@@ -313,28 +400,40 @@ async function handleProfileNameSave() {
 
 async function handleLogout() {
   pauseTimer();
+  clearSupabaseSession();
   if (!supabaseClient) {
     applySignedOutUser();
     authMessage.textContent = "Signed out.";
     return;
   }
 
-  const { error } = await supabaseClient.auth.signOut();
-  if (error) {
-    authMessage.textContent = error.message;
-    return;
-  }
+  try {
+    const { error } = await supabaseClient.auth.signOut();
+    if (error) {
+      applySignedOutUser();
+      authMessage.textContent = `Signed out on this device. Supabase sign-out warning: ${error.message}`;
+      return;
+    }
 
-  applySignedOutUser();
-  authMessage.textContent = "Signed out. Sign in again or create another account.";
+    applySignedOutUser();
+    authMessage.textContent = "Signed out. Sign in again or create another account.";
+  } catch (error) {
+    applySignedOutUser();
+    authMessage.textContent = "Signed out on this device.";
+  }
 }
 
-function toggleAuthPanel() {
-  authPanelCollapsed = !authPanelCollapsed;
-  render();
-  if (!authPanelCollapsed) {
-    authEmailInput.focus();
+function hideTopShell() {
+  if (hasActiveSession) {
+    return;
   }
+  topShellHidden = true;
+  render();
+}
+
+function showTopShell() {
+  topShellHidden = false;
+  render();
 }
 
 async function initializeAuth() {
@@ -347,10 +446,23 @@ async function initializeAuth() {
     return;
   }
 
+  isInitializingAuth = true;
   try {
-    const { data, error } = await supabaseClient.auth.getSession();
+    let { data, error } = await supabaseClient.auth.getSession();
     if (error) {
       authMessage.textContent = error.message;
+    }
+
+    if (!data?.session) {
+      const cachedSession = loadSupabaseSession();
+      if (cachedSession?.access_token && cachedSession?.refresh_token) {
+        const restored = await supabaseClient.auth.setSession(cachedSession);
+        if (!restored.error && restored.data?.session) {
+          data = restored.data;
+          error = null;
+          saveSupabaseSession(restored.data.session);
+        }
+      }
     }
 
     const sessionEmail = data?.session?.user?.email || "";
@@ -361,18 +473,32 @@ async function initializeAuth() {
       applySignedOutUser({ silent: true });
     }
   } catch (error) {
+    applySignedOutUser({ silent: true });
     authMessage.textContent = "We could not initialize Supabase sign in right now.";
+  } finally {
+    isInitializingAuth = false;
   }
 
-  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+  supabaseClient.auth.onAuthStateChange(async (event, session) => {
     const nextEmail = session?.user?.email || "";
     if (nextEmail) {
+      saveSupabaseSession(session);
       await ensureSupabaseProfile(session.user);
       await applySignedInUser(nextEmail, session.user, { silent: true });
       render();
       return;
     }
 
+    const cachedSession = loadSupabaseSession();
+    if (
+      cachedSession?.access_token
+      && cachedSession?.refresh_token
+      && (isInitializingAuth || event === "INITIAL_SESSION")
+    ) {
+      return;
+    }
+
+    clearSupabaseSession();
     applySignedOutUser({ silent: true });
     render();
   });
@@ -382,25 +508,39 @@ async function initializeAuth() {
 
 async function applySignedInUser(email, user = null, options = {}) {
   authState.currentUser = email;
+  authState.lastEmail = email;
   saveAuthState();
   state = loadState();
-  timer = createDefaultTimer();
-  authPanelCollapsed = true;
+  hasActiveSession = true;
+  currentSessionUser = user || null;
+  authPanelCollapsed = false;
+  topShellHidden = false;
   profileDisplayName = getDisplayNameFromUser(user);
   debugStatus.userEmail = email || "";
   debugStatus.userId = user?.id || debugStatus.userId || "";
-  await loadTasksFromSupabase(user, { silent: true });
+  hydrateSharedPlannerStateFromUser(user);
+  timer = createDefaultTimer();
   if (!options.silent) {
     render();
   }
+  void loadTasksFromSupabase(user, { silent: true }).then(() => {
+    render();
+  });
 }
 
 function applySignedOutUser(options = {}) {
+  if (sharedStateSyncTimeout) {
+    window.clearTimeout(sharedStateSyncTimeout);
+    sharedStateSyncTimeout = null;
+  }
   authState.currentUser = "";
   saveAuthState();
   state = JSON.parse(JSON.stringify(defaultState));
   timer = createDefaultTimer();
+  hasActiveSession = false;
+  currentSessionUser = null;
   authPanelCollapsed = false;
+  topShellHidden = false;
   profileDisplayName = "";
   debugStatus.userEmail = "";
   debugStatus.userId = "";
@@ -423,7 +563,105 @@ function getDisplayNameFromUser(user) {
     return displayName;
   }
 
+  const emailName = deriveDisplayNameFromEmail(user?.email || "");
+  if (emailName) {
+    return emailName;
+  }
+
   return "";
+}
+
+function deriveDisplayNameFromEmail(email) {
+  const localPart = String(email || "").trim().split("@")[0] || "";
+  if (!localPart) {
+    return "";
+  }
+
+  return localPart
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function hydrateSharedPlannerStateFromUser(user) {
+  const sharedState = user?.user_metadata?.study_planner_state;
+  if (!sharedState || typeof sharedState !== "object") {
+    return;
+  }
+
+  if (Array.isArray(sharedState.sessions)) {
+    state.sessions = sharedState.sessions;
+  }
+
+  if (sharedState.timerSettings) {
+    state.timerSettings = normalizePomodoroSettings(sharedState.timerSettings);
+  }
+
+  if (sharedState.timerSession) {
+    state.timerSession = normalizeTimerSession(sharedState.timerSession);
+  }
+}
+
+function scheduleSharedStateSync() {
+  if (!supabaseClient || !getCurrentUser()) {
+    return;
+  }
+
+  if (sharedStateSyncTimeout) {
+    window.clearTimeout(sharedStateSyncTimeout);
+  }
+
+  sharedStateSyncTimeout = window.setTimeout(() => {
+    sharedStateSyncTimeout = null;
+    syncSharedPlannerStateToSupabase();
+  }, 250);
+}
+
+async function updateProfileNameMetadata(nextName) {
+  return supabaseClient.auth.updateUser({
+    data: {
+      full_name: nextName,
+      display_name: nextName,
+      study_planner_state: {
+        sessions: state.sessions,
+        timerSettings: state.timerSettings,
+        timerSession: state.timerSession
+      }
+    }
+  });
+}
+
+async function syncSharedPlannerStateToSupabase() {
+  if (!supabaseClient || !getCurrentUser()) {
+    return;
+  }
+
+  const payload = {
+    study_planner_state: {
+      sessions: state.sessions,
+      timerSettings: state.timerSettings,
+      timerSession: state.timerSession
+    },
+    ...(profileDisplayName
+      ? {
+          full_name: profileDisplayName,
+          display_name: profileDisplayName
+        }
+      : {})
+  };
+
+  const { error } = await supabaseClient.auth.updateUser({
+    data: payload
+  });
+
+  if (error) {
+    debugStatus.latestSupabaseError = error.message;
+    console.error("Shared planner sync error:", error);
+    return;
+  }
+
+  debugStatus.latestSupabaseError = "None";
 }
 
 async function ensureSupabaseProfile(user) {
@@ -446,7 +684,7 @@ async function ensureSupabaseProfile(user) {
 
   if (profileError) {
     console.error("Profile upsert error:", profileError);
-    window.alert(`Profile save error: ${profileError.message}`);
+    debugStatus.latestSupabaseError = profileError.message;
     return;
   }
 
@@ -607,10 +845,30 @@ function deserializeTaskRecord(taskRow) {
     actualUnits: Number(stored.actualUnits) || 0,
     contentStart: stored.contentStart || "",
     contentStop: stored.contentStop || "",
+    occurrenceProgress: normalizeOccurrenceProgressMap(stored.occurrenceProgress),
     progress: Number(stored.progress) || 0,
     completed: Boolean(stored.completed),
     createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString()
   };
+}
+
+function normalizeOccurrenceProgressMap(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([dateKey, entry]) => [dateKey, {
+      actualHours: Number(entry?.actualHours) || 0,
+      actualContent: Number(entry?.actualContent ?? entry?.actualPages ?? entry?.actualUnits) || 0,
+      actualPages: Number(entry?.actualPages) || 0,
+      actualUnits: Number(entry?.actualUnits) || 0,
+      contentStart: entry?.contentStart || "",
+      contentStop: entry?.contentStop || "",
+      progress: Number(entry?.progress) || 0,
+      completed: Boolean(entry?.completed)
+    }])
+  );
 }
 
 function parseTaskDescription(value) {
@@ -680,6 +938,7 @@ async function handleAddItem(event) {
     actualUnits: existingItem?.actualUnits || 0,
     contentStart: existingItem?.contentStart || "",
     contentStop: existingItem?.contentStop || "",
+    occurrenceProgress: existingItem?.occurrenceProgress || {},
     progress: existingItem?.progress || 0,
     completed: existingItem?.completed || false,
     createdAt: existingItem?.createdAt || new Date().toISOString()
@@ -850,17 +1109,18 @@ function completeTimerStage() {
   if (finishedMode === "focus") {
     const completedItemId = timer.selectedItemId || timerCourseSelect.value || "";
     const activeSettings = getActiveTimerSettings();
+    const completedAt = new Date();
     state.sessions.push({
       id: makeId(),
       minutes: activeSettings.focusMinutes,
-      completedAt: new Date().toISOString(),
+      completedAt: completedAt.toISOString(),
       itemId: completedItemId
     });
 
     if (completedItemId) {
       state.items = state.items.map((item) => (
         item.id === completedItemId
-          ? applyCompletedPomodoroToItem(item, activeSettings.focusMinutes)
+          ? applyCompletedPomodoroToItem(item, activeSettings.focusMinutes, completedAt)
           : item
       ));
       const updatedItem = state.items.find((item) => item.id === completedItemId);
@@ -972,14 +1232,26 @@ function syncExistingPlanOptions() {
 
 function render() {
   const signedInUser = getCurrentUser();
-  const isSignedIn = Boolean(signedInUser);
-  authShell.classList.toggle("collapsed", authPanelCollapsed);
-  currentUsername.textContent = profileDisplayName || signedInUser || "Guest";
-  authToggleButton.hidden = isSignedIn;
-  authToggleButton.textContent = authPanelCollapsed ? "Show sign in" : "Hide sign in";
+  const isSignedIn = hasActiveSession && Boolean(currentSessionUser?.id || signedInUser);
+  if (appShell) {
+    appShell.hidden = !isSignedIn;
+  }
+  if (topShell) {
+    topShell.hidden = isSignedIn ? true : topShellHidden;
+  }
+  if (loginReveal) {
+    loginReveal.hidden = isSignedIn || !topShellHidden;
+  }
+  authShell.classList.toggle("collapsed", !isSignedIn && topShellHidden);
+  topShell?.classList.toggle("signed-out", !isSignedIn);
+  topShell?.classList.toggle("auth-open", !topShellHidden);
+  topShell?.classList.toggle("auth-collapsed", topShellHidden);
+  currentUsername.textContent = isSignedIn
+    ? (profileDisplayName || deriveDisplayNameFromEmail(signedInUser) || "Student")
+    : "Student";
   logoutButton.hidden = !isSignedIn;
-  if (profileNameEditor) {
-    profileNameEditor.hidden = !isSignedIn;
+  if (saveProfileNameButton) {
+    saveProfileNameButton.hidden = !isSignedIn;
   }
   if (profileNameInput && document.activeElement !== profileNameInput) {
     profileNameInput.value = profileDisplayName || "";
@@ -1000,10 +1272,69 @@ function render() {
   renderTimerSettingsSummary();
   renderTimelineHeader();
   renderItems();
-  renderHeroMetrics();
   renderReports();
   renderTimer();
-  renderDebugPanel();
+  syncSectionNavFromHash();
+}
+
+function initializeSectionNavigation() {
+  if (!sectionNavLinks.length) {
+    return;
+  }
+
+  sectionNavLinks.forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const href = link.getAttribute("href") || "";
+      setActivePage(href);
+    });
+  });
+  syncSectionNavFromHash();
+}
+
+function syncSectionNavFromHash() {
+  if (!sectionNavLinks.length) {
+    return;
+  }
+
+  const currentHash = window.location.hash || "#tasksSection";
+  setActivePage(currentHash, { updateHash: false });
+}
+
+function setActivePage(targetHash, options = {}) {
+  const normalizedHash = sectionNavLinks.some((link) => link.getAttribute("href") === targetHash)
+    ? targetHash
+    : (sectionNavLinks[0]?.getAttribute("href") || "");
+
+  if (!normalizedHash) {
+    return;
+  }
+
+  activePageHash = normalizedHash;
+  if (options.updateHash !== false && window.location.hash !== normalizedHash) {
+    window.location.hash = normalizedHash;
+  }
+
+  applyPageVisibility();
+  setActiveSectionNavLink(normalizedHash);
+}
+
+function applyPageVisibility() {
+  if (layout) {
+    layout.classList.add("page-mode");
+  }
+
+  pageSections.forEach((section) => {
+    const isActive = `#${section.id}` === activePageHash;
+    section.classList.toggle("page-active", isActive);
+    section.hidden = !isActive;
+  });
+}
+
+function setActiveSectionNavLink(targetHash) {
+  sectionNavLinks.forEach((link) => {
+    link.classList.toggle("active", link.getAttribute("href") === targetHash);
+  });
 }
 
 function renderItems() {
@@ -1036,25 +1367,29 @@ function renderItems() {
     const saveButton = fragment.querySelector(".save-item");
     const deleteButton = fragment.querySelector(".delete-btn");
     const tracking = getContentTrackingConfig(item);
+    const occurrenceKey = getOccurrenceDateKey(occurrenceDate);
+    const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
+    const saveFeedbackKey = usesOccurrenceProgress(item) ? `${item.id}:${occurrenceKey}` : item.id;
 
     card.dataset.itemId = item.id;
+    card.dataset.occurrenceKey = occurrenceKey;
     title.textContent = item.course;
     meta.textContent = buildItemMeta(item, occurrenceDate);
-    const contentState = getContentProgressState(item);
+    const contentState = getContentProgressState(item, occurrenceDate);
     contentStartLabel.textContent = tracking.startLabel;
     contentStopLabel.textContent = tracking.stopLabel;
-    contentStartInput.value = item.contentStart || "";
-    contentStopInput.value = item.contentStop || "";
+    contentStartInput.value = occurrenceEntry.contentStart || "";
+    contentStopInput.value = occurrenceEntry.contentStop || "";
     contentStartInput.placeholder = tracking.startPlaceholder;
     contentStopInput.placeholder = tracking.stopPlaceholder;
     contentSummary.textContent = contentState.summary;
-    const displayedProgress = getDisplayedTimeProgress(item);
+    const displayedProgress = getDisplayedTimeProgress(item, occurrenceDate);
     progressRange.value = displayedProgress;
     progressValue.textContent = `${displayedProgress}% time achieved`;
-    goalStatus.textContent = isStudyGoalAchieved(item) ? "Study goal achieved" : "Study goal in progress";
-    goalStatus.classList.toggle("complete", isStudyGoalAchieved(item));
-    goalStatus.classList.toggle("pending", !isStudyGoalAchieved(item));
-    applySaveStatus(saveStatus, saveFeedbackByItemId[item.id]);
+    goalStatus.textContent = isStudyGoalAchieved(item, occurrenceDate) ? "Study goal achieved" : "Study goal in progress";
+    goalStatus.classList.toggle("complete", isStudyGoalAchieved(item, occurrenceDate));
+    goalStatus.classList.toggle("pending", !isStudyGoalAchieved(item, occurrenceDate));
+    applySaveStatus(saveStatus, saveFeedbackByItemId[saveFeedbackKey]);
 
     const refreshContentSummary = () => {
       const draftAmount = calculateTrackedAmount(
@@ -1069,11 +1404,11 @@ function renderItems() {
       if (!contentStartInput.value && !contentStopInput.value) {
         contentSummary.textContent = contentState.summary;
       }
-      saveFeedbackByItemId[item.id] = {
+      saveFeedbackByItemId[saveFeedbackKey] = {
         tone: "pending",
         text: "Unsaved page or unit change"
       };
-      applySaveStatus(saveStatus, saveFeedbackByItemId[item.id]);
+      applySaveStatus(saveStatus, saveFeedbackByItemId[saveFeedbackKey]);
     };
 
     contentStartInput.addEventListener("input", refreshContentSummary);
@@ -1090,12 +1425,12 @@ function renderItems() {
             contentStart,
             contentStop,
             trackedAmount
-          }))
+          }, occurrenceDate))
           : entry
       ));
       updatedItem = await saveTaskToSupabase(updatedItem || item);
       state.items = state.items.map((entry) => entry.id === item.id ? updatedItem : entry);
-      saveFeedbackByItemId[item.id] = {
+      saveFeedbackByItemId[saveFeedbackKey] = {
         tone: "saved",
         text: `Saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
       };
@@ -1104,42 +1439,48 @@ function renderItems() {
     });
 
     deleteButton.addEventListener("click", async () => {
-      const deleteAllowed = await deleteTaskFromSupabase(item);
-      if (!deleteAllowed) {
-        return;
-      }
+      const previousItems = [...state.items];
+      deleteButton.disabled = true;
+      deleteButton.textContent = "Deleting...";
+      saveFeedbackByItemId[item.id] = {
+        tone: "pending",
+        text: "Deleting plan..."
+      };
+
       state.items = state.items.filter((entry) => entry.id !== item.id);
       saveState();
       render();
+
+      try {
+        const deleteAllowed = await deleteTaskFromSupabase(item);
+        if (!deleteAllowed) {
+          state.items = previousItems;
+          saveFeedbackByItemId[item.id] = {
+            tone: "pending",
+            text: "Delete failed"
+          };
+          saveState();
+          render();
+        }
+      } catch (error) {
+        state.items = previousItems;
+        debugStatus.latestSupabaseError = error?.message || "Delete failed";
+        window.alert(`Task delete error: ${error?.message || "Delete failed"}`);
+        saveFeedbackByItemId[item.id] = {
+          tone: "pending",
+          text: "Delete failed"
+        };
+        saveState();
+        render();
+      }
     });
 
-    if (isStudyGoalAchieved(item)) {
+    if (isStudyGoalAchieved(item, occurrenceDate)) {
       card.style.opacity = "0.72";
     }
 
     itemsList.appendChild(fragment);
   });
-}
-
-function renderDebugPanel() {
-  if (!debugGrid) {
-    return;
-  }
-
-  const cards = [
-    { label: "Signed-in user email", value: debugStatus.userEmail || "Not signed in" },
-    { label: "Signed-in user id", value: debugStatus.userId || "Unknown" },
-    { label: "Task load count", value: String(debugStatus.taskLoadCount ?? 0) },
-    { label: "Latest save status", value: debugStatus.latestSaveStatus || "No task save yet" },
-    { label: "Latest Supabase error", value: debugStatus.latestSupabaseError || "None" }
-  ];
-
-  debugGrid.innerHTML = cards.map((card) => `
-    <div class="debug-card">
-      <span>${escapeHtml(card.label)}</span>
-      <strong>${escapeHtml(card.value)}</strong>
-    </div>
-  `).join("");
 }
 
 function normalizeContentUnitType(value) {
@@ -1246,10 +1587,101 @@ function calculateTrackedAmount(start, stop) {
   return stop - start + 1;
 }
 
-function getContentProgressState(item) {
+function getOccurrenceDateKey(value) {
+  if (!value) {
+    return "";
+  }
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  return formatDateInputValue(startOfDay(value instanceof Date ? value : new Date(value)));
+}
+
+function usesOccurrenceProgress(item) {
+  return Boolean(normalizeRepeat(item?.repeat));
+}
+
+function getOccurrenceProgressEntry(item, occurrenceDate = null) {
+  if (!usesOccurrenceProgress(item)) {
+    return {
+      actualHours: Number(item.actualHours) || 0,
+      actualContent: Number(item.actualContent ?? getLegacyActualContent(item)) || 0,
+      actualPages: Number(item.actualPages) || 0,
+      actualUnits: Number(item.actualUnits) || 0,
+      contentStart: item.contentStart || "",
+      contentStop: item.contentStop || "",
+      progress: Number(item.progress) || 0,
+      completed: Boolean(item.completed)
+    };
+  }
+
+  const dateKey = getOccurrenceDateKey(occurrenceDate || item.dueDate);
+  const storedEntry = item.occurrenceProgress?.[dateKey];
+  if (storedEntry) {
+    return {
+      actualHours: Number(storedEntry.actualHours) || 0,
+      actualContent: Number(storedEntry.actualContent ?? storedEntry.actualPages ?? storedEntry.actualUnits) || 0,
+      actualPages: Number(storedEntry.actualPages) || 0,
+      actualUnits: Number(storedEntry.actualUnits) || 0,
+      contentStart: storedEntry.contentStart || "",
+      contentStop: storedEntry.contentStop || "",
+      progress: Number(storedEntry.progress) || 0,
+      completed: Boolean(storedEntry.completed)
+    };
+  }
+
+  const dueDateKey = getOccurrenceDateKey(item.dueDate);
+  if (dueDateKey === dateKey) {
+    return {
+      actualHours: Number(item.actualHours) || 0,
+      actualContent: Number(item.actualContent ?? getLegacyActualContent(item)) || 0,
+      actualPages: Number(item.actualPages) || 0,
+      actualUnits: Number(item.actualUnits) || 0,
+      contentStart: item.contentStart || "",
+      contentStop: item.contentStop || "",
+      progress: Number(item.progress) || 0,
+      completed: Boolean(item.completed)
+    };
+  }
+
+  return {
+    actualHours: 0,
+    actualContent: 0,
+    actualPages: 0,
+    actualUnits: 0,
+    contentStart: "",
+    contentStop: "",
+    progress: 0,
+    completed: false
+  };
+}
+
+function mergeOccurrenceProgressEntry(item, occurrenceDate, entry) {
+  if (!usesOccurrenceProgress(item)) {
+    return {
+      ...item,
+      ...entry
+    };
+  }
+
+  const dateKey = getOccurrenceDateKey(occurrenceDate || item.dueDate);
+  return {
+    ...item,
+    occurrenceProgress: {
+      ...(item.occurrenceProgress || {}),
+      [dateKey]: {
+        ...getOccurrenceProgressEntry(item, occurrenceDate),
+        ...entry
+      }
+    }
+  };
+}
+
+function getContentProgressState(item, occurrenceDate = null) {
   const tracking = getContentTrackingConfig(item);
   const total = tracking.total || 0;
-  const achieved = item.actualContent ?? getLegacyActualContent(item);
+  const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
+  const achieved = occurrenceEntry.actualContent ?? getLegacyActualContent(item);
   const percent = total > 0 ? Math.min(100, Math.round((achieved / total) * 100)) : 0;
 
   if (!total) {
@@ -1265,21 +1697,37 @@ function getContentProgressState(item) {
   };
 }
 
-function buildUpdatedProgressItem(item, progressInput) {
+function buildUpdatedProgressItem(item, progressInput, occurrenceDate = null) {
   const tracking = getContentTrackingConfig(item);
+  const currentEntry = getOccurrenceProgressEntry(item, occurrenceDate);
   const actualPages = tracking.type === "pages" ? progressInput.trackedAmount : item.actualPages;
   const actualUnits = tracking.type === "units" ? progressInput.trackedAmount : item.actualUnits;
-  const updatedItem = {
-    ...item,
+  const occurrenceActualPages = tracking.type === "pages" ? progressInput.trackedAmount : currentEntry.actualPages;
+  const occurrenceActualUnits = tracking.type === "units" ? progressInput.trackedAmount : currentEntry.actualUnits;
+  let updatedItem = mergeOccurrenceProgressEntry(item, occurrenceDate, {
     contentStart: progressInput.contentStart || "",
     contentStop: progressInput.contentStop || "",
     actualContent: progressInput.trackedAmount,
-    actualPages,
-    actualUnits
-  };
+    actualPages: occurrenceActualPages,
+    actualUnits: occurrenceActualUnits
+  });
 
-  updatedItem.progress = getDisplayedTimeProgress(updatedItem);
-  updatedItem.completed = isStudyGoalAchieved(updatedItem);
+  if (!usesOccurrenceProgress(item)) {
+    updatedItem = {
+      ...updatedItem,
+      actualPages,
+      actualUnits
+    };
+  }
+
+  const occurrenceProgress = getDisplayedTimeProgress(updatedItem, occurrenceDate);
+  const occurrenceCompleted = isStudyGoalAchieved(updatedItem, occurrenceDate);
+  updatedItem = mergeOccurrenceProgressEntry(updatedItem, occurrenceDate, {
+    progress: occurrenceProgress,
+    completed: occurrenceCompleted
+  });
+  updatedItem.progress = usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : occurrenceProgress;
+  updatedItem.completed = usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : occurrenceCompleted;
   return updatedItem;
 }
 
@@ -1290,33 +1738,12 @@ function applySaveStatus(element, feedback) {
   element.classList.toggle("pending", feedback?.tone === "pending");
 }
 
-function renderHeroMetrics() {
-  const filteredItems = getFilteredItems().map((entry) => entry.item);
-  const totalPlannedHours = sum(filteredItems, (item) => getTimeTargetHours(item));
-  const totalActualHours = sum(filteredItems, (item) => getDisplayedActualHours(item));
-  const pendingItems = filteredItems.filter((item) => !item.completed).length;
-  const studyMinutesToday = getMinutesForRange("day");
-
-  const cards = [
-    { label: "Planned hours", value: totalPlannedHours.toFixed(1) },
-    { label: "Hours studied", value: totalActualHours.toFixed(1) },
-    { label: "Pending items", value: pendingItems },
-    { label: "Focus mins today", value: formatMinutesDisplay(studyMinutesToday + getLiveFocusMinutes()) }
-  ];
-
-  heroMetrics.innerHTML = cards.map((card) => `
-    <div class="metric-card">
-      <span>${card.label}</span>
-      <strong>${card.value}</strong>
-    </div>
-  `).join("");
-}
-
 function renderTimelineHeader() {
   const details = getViewDetails(activeView);
   const windowRange = getActiveViewRange();
-  planWindowTitle.textContent = details.title;
-  planWindowSubtitle.textContent = details.subtitle;
+  if (headerPlanDate) {
+    headerPlanDate.textContent = details.title;
+  }
   upcomingWindowEyebrow.textContent = details.eyebrow;
   upcomingWindowTitle.textContent = details.listTitle;
   upcomingWindowSubtitle.textContent = details.listSubtitle;
@@ -1330,12 +1757,14 @@ function renderTimelineHeader() {
 }
 
 function renderReports() {
-  const dailyMinutes = getDisplayMinutesForRange("day");
-  const weeklyMinutes = getDisplayMinutesForRange("week");
-  const monthlyMinutes = getDisplayMinutesForRange("month");
-  const yearlyMinutes = getDisplayMinutesForRange("year");
-  const completedItems = state.items.filter((item) => item.completed).length;
-  const completionRate = state.items.length ? Math.round((completedItems / state.items.length) * 100) : 0;
+  const reportAnchorDate = startOfDay(viewCursor);
+  const filteredEntries = getFilteredItems();
+  const dailyMinutes = getDisplayMinutesForRange("day", reportAnchorDate);
+  const weeklyMinutes = getDisplayMinutesForRange("week", reportAnchorDate);
+  const monthlyMinutes = getDisplayMinutesForRange("month", reportAnchorDate);
+  const yearlyMinutes = getDisplayMinutesForRange("year", reportAnchorDate);
+  const completedItems = filteredEntries.filter(({ item, occurrenceDate }) => isStudyGoalAchieved(item, occurrenceDate)).length;
+  const completionRate = filteredEntries.length ? Math.round((completedItems / filteredEntries.length) * 100) : 0;
   const dailyTargetMinutes = getActiveTimerSettings().dailyTargetMinutes;
   const todayAchievement = Math.min(100, Math.round((dailyMinutes / dailyTargetMinutes) * 100));
 
@@ -1355,7 +1784,12 @@ function renderReports() {
     </div>
   `).join("");
 
+  const progressLabel = getOccurrenceDateKey(reportAnchorDate) === getOccurrenceDateKey(new Date()) ? "Today's progress" : `${formatLongDate(reportAnchorDate)} progress`;
   todayProgressText.textContent = `${formatMinutesDisplay(dailyMinutes)} / ${dailyTargetMinutes} mins | ${todayAchievement}%`;
+  const todayProgressLabel = document.querySelector(".today-target span");
+  if (todayProgressLabel) {
+    todayProgressLabel.textContent = progressLabel;
+  }
   todayProgressBar.style.width = `${todayAchievement}%`;
 
   [...trendFilterControls.querySelectorAll("[data-trend-view]")].forEach((button) => {
@@ -1384,15 +1818,15 @@ function renderFocusTrend() {
 }
 
 function renderAchievementMeasure() {
-  const filteredItems = getFilteredItems().map((entry) => entry.item);
+  const filteredEntries = getFilteredItems();
 
-  if (!filteredItems.length) {
+  if (!filteredEntries.length) {
     typeBreakdown.innerHTML = '<div class="empty-state">Add study items to compare achieved study time against your plan.</div>';
     return;
   }
 
-  const totalPlannedHours = sum(filteredItems, (item) => getTimeTargetHours(item));
-  const totalAchievedHours = sum(filteredItems, (item) => getDisplayedActualHours(item));
+  const totalPlannedHours = sum(filteredEntries, ({ item }) => getTimeTargetHours(item));
+  const totalAchievedHours = sum(filteredEntries, ({ item, occurrenceDate }) => getDisplayedActualHours(item, occurrenceDate));
   const achievedPercent = totalPlannedHours > 0
     ? Math.min(100, Math.round((totalAchievedHours / totalPlannedHours) * 100))
     : 0;
@@ -1552,26 +1986,36 @@ function playPhoneRing() {
     masterGain.gain.setValueAtTime(0.001, context.currentTime);
     masterGain.connect(context.destination);
 
-    // Classic telephone-style dual-tone ring: two frequencies pulsed in bursts.
-    const carriers = [440, 480].map((frequency) => {
+    const carriers = [360, 440, 720].map((frequency, index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      oscillator.type = "sine";
+      oscillator.type = index === 0 ? "square" : (index === 1 ? "sawtooth" : "triangle");
       oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-      gain.gain.setValueAtTime(0.5, context.currentTime);
+      gain.gain.setValueAtTime(index === 2 ? 0.18 : 0.52, context.currentTime);
       oscillator.connect(gain);
       gain.connect(masterGain);
       oscillator.start(context.currentTime);
       return oscillator;
     });
 
+    const wobble = context.createOscillator();
+    const wobbleGain = context.createGain();
+    wobble.type = "sine";
+    wobble.frequency.setValueAtTime(14, context.currentTime);
+    wobbleGain.gain.setValueAtTime(0.07, context.currentTime);
+    wobble.connect(wobbleGain);
+    wobbleGain.connect(masterGain.gain);
+    wobble.start(context.currentTime);
+
     const pulsePattern = [
-      { start: 0.0, duration: 0.35, gain: 0.34 },
-      { start: 0.45, duration: 0.35, gain: 0.34 },
-      { start: 1.3, duration: 0.35, gain: 0.38 },
-      { start: 1.75, duration: 0.35, gain: 0.38 },
-      { start: 2.65, duration: 0.4, gain: 0.42 },
-      { start: 3.15, duration: 0.4, gain: 0.42 }
+      { start: 0.0, duration: 0.18, gain: 0.66 },
+      { start: 0.26, duration: 0.18, gain: 0.66 },
+      { start: 1.28, duration: 0.18, gain: 0.74 },
+      { start: 1.54, duration: 0.18, gain: 0.74 },
+      { start: 2.56, duration: 0.2, gain: 0.82 },
+      { start: 2.84, duration: 0.2, gain: 0.82 },
+      { start: 3.96, duration: 0.22, gain: 0.9 },
+      { start: 4.28, duration: 0.22, gain: 0.9 }
     ];
 
     pulsePattern.forEach((pulse) => {
@@ -1579,18 +2023,14 @@ function playPhoneRing() {
       const release = attack + pulse.duration;
       masterGain.gain.cancelScheduledValues(attack);
       masterGain.gain.setValueAtTime(0.001, attack);
-      masterGain.gain.exponentialRampToValueAtTime(pulse.gain, attack + 0.02);
+      masterGain.gain.exponentialRampToValueAtTime(pulse.gain, attack + 0.006);
       masterGain.gain.exponentialRampToValueAtTime(0.001, release);
     });
 
-    const stopAt = context.currentTime + 4.2;
-    carriers.forEach((oscillator) => {
-      oscillator.stop(stopAt);
-    });
-
-    window.setTimeout(() => {
-      context.close();
-    }, 4200);
+    const stopAt = context.currentTime + 5.4;
+    carriers.forEach((oscillator) => oscillator.stop(stopAt));
+    wobble.stop(stopAt);
+    window.setTimeout(() => context.close(), 5400);
   } catch (error) {
     return;
   }
@@ -1602,20 +2042,20 @@ function playBellRing() {
 
   try {
     const context = new AudioContextClass();
-    [0, 0.45, 0.95].forEach((start, index) => {
+    [0, 0.5, 1.05, 1.7].forEach((start, index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(880 + (index * 80), context.currentTime + start);
+      oscillator.frequency.setValueAtTime(860 + (index * 70), context.currentTime + start);
       gain.gain.setValueAtTime(0.001, context.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(0.28, context.currentTime + start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + start + 0.8);
+      gain.gain.exponentialRampToValueAtTime(0.42, context.currentTime + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + start + 1.05);
       oscillator.connect(gain);
       gain.connect(context.destination);
       oscillator.start(context.currentTime + start);
-      oscillator.stop(context.currentTime + start + 0.8);
+      oscillator.stop(context.currentTime + start + 1.05);
     });
-    window.setTimeout(() => context.close(), 2200);
+    window.setTimeout(() => context.close(), 3400);
   } catch (error) {
     return;
   }
@@ -1627,21 +2067,21 @@ function playChimeRing() {
 
   try {
     const context = new AudioContextClass();
-    const notes = [659, 784, 988];
+    const notes = [659, 784, 988, 1175];
     notes.forEach((frequency, index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(frequency, context.currentTime + (index * 0.22));
-      gain.gain.setValueAtTime(0.001, context.currentTime + (index * 0.22));
-      gain.gain.exponentialRampToValueAtTime(0.24, context.currentTime + (index * 0.22) + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + (index * 0.22) + 0.45);
+      oscillator.frequency.setValueAtTime(frequency, context.currentTime + (index * 0.28));
+      gain.gain.setValueAtTime(0.001, context.currentTime + (index * 0.28));
+      gain.gain.exponentialRampToValueAtTime(0.34, context.currentTime + (index * 0.28) + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + (index * 0.28) + 0.62);
       oscillator.connect(gain);
       gain.connect(context.destination);
-      oscillator.start(context.currentTime + (index * 0.22));
-      oscillator.stop(context.currentTime + (index * 0.22) + 0.45);
+      oscillator.start(context.currentTime + (index * 0.28));
+      oscillator.stop(context.currentTime + (index * 0.28) + 0.62);
     });
-    window.setTimeout(() => context.close(), 1400);
+    window.setTimeout(() => context.close(), 2200);
   } catch (error) {
     return;
   }
@@ -1653,21 +2093,21 @@ function playPopcornRing() {
 
   try {
     const context = new AudioContextClass();
-    const pops = [0, 0.12, 0.26, 0.44, 0.68, 0.96, 1.28, 1.66];
+    const pops = [0, 0.12, 0.26, 0.44, 0.68, 0.96, 1.28, 1.66, 2.04, 2.42, 2.8];
     pops.forEach((start, index) => {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       oscillator.type = "square";
       oscillator.frequency.setValueAtTime(560 + ((index % 3) * 110), context.currentTime + start);
       gain.gain.setValueAtTime(0.001, context.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + start + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + start + 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.26, context.currentTime + start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + start + 0.1);
       oscillator.connect(gain);
       gain.connect(context.destination);
       oscillator.start(context.currentTime + start);
-      oscillator.stop(context.currentTime + start + 0.08);
+      oscillator.stop(context.currentTime + start + 0.1);
     });
-    window.setTimeout(() => context.close(), 2200);
+    window.setTimeout(() => context.close(), 3600);
   } catch (error) {
     return;
   }
@@ -1675,7 +2115,7 @@ function playPopcornRing() {
 
 function vibrateCompletionAlert() {
   if (!("vibrate" in navigator)) return;
-  navigator.vibrate([250, 140, 250]);
+  navigator.vibrate([350, 160, 350, 160, 350]);
 }
 
 function runCompletionAlert(settings = getActiveTimerSettings()) {
@@ -1699,7 +2139,18 @@ function runCompletionAlert(settings = getActiveTimerSettings()) {
 }
 
 function testCurrentAlert() {
-  runCompletionAlert(getActiveTimerSettings());
+  const previewSettings = normalizePomodoroSettings({
+    alertMode: String(form?.elements?.itemAlertMode?.value || getActiveTimerSettings().alertMode || "ring"),
+    alertSound: String(form?.elements?.itemAlertSound?.value || getActiveTimerSettings().alertSound || "phone"),
+    focusMinutes: getActiveTimerSettings().focusMinutes,
+    breakMinutes: getActiveTimerSettings().breakMinutes,
+    dailyTargetMinutes: getActiveTimerSettings().dailyTargetMinutes
+  });
+
+  runCompletionAlert({
+    ...previewSettings,
+    alertMode: previewSettings.alertMode === "off" ? "ring" : previewSettings.alertMode
+  });
 }
 
 function renderTimer() {
@@ -1707,9 +2158,15 @@ function renderTimer() {
   timerDisplay.textContent = formatClock(timer.secondsLeft);
   updateLiveItemDisplays();
   updateTimerButtons();
-  const liveDailyMinutes = getDisplayMinutesForRange("day");
+  const reportAnchorDate = startOfDay(viewCursor);
+  const liveDailyMinutes = getDisplayMinutesForRange("day", reportAnchorDate);
   const dailyTargetMinutes = getActiveTimerSettings().dailyTargetMinutes;
   const liveDailyPercent = Math.min(100, Math.round((liveDailyMinutes / dailyTargetMinutes) * 100));
+  const progressLabel = getOccurrenceDateKey(reportAnchorDate) === getOccurrenceDateKey(new Date()) ? "Today's progress" : `${formatLongDate(reportAnchorDate)} progress`;
+  const todayProgressLabel = document.querySelector(".today-target span");
+  if (todayProgressLabel) {
+    todayProgressLabel.textContent = progressLabel;
+  }
   todayProgressText.textContent = `${formatMinutesDisplay(liveDailyMinutes)} / ${dailyTargetMinutes} mins | ${liveDailyPercent}%`;
   todayProgressBar.style.width = `${liveDailyPercent}%`;
 
@@ -1842,29 +2299,44 @@ function getActiveTimerSettings() {
   return normalizePomodoroSettings(getSelectedTimerItem()?.pomodoro);
 }
 
-function getMinutesForRange(range) {
-  const now = new Date();
-  let start = new Date(now);
+function getRangeBounds(range, anchorDate = new Date()) {
+  const anchor = startOfDay(anchorDate);
+  let start = new Date(anchor);
+  let end = new Date(anchor);
 
   if (range === "day") {
-    start.setHours(0, 0, 0, 0);
+    end = addDays(start, 1);
   } else if (range === "week") {
     const day = (start.getDay() + 6) % 7;
     start.setDate(start.getDate() - day);
-    start.setHours(0, 0, 0, 0);
+    end = addDays(start, 7);
   } else if (range === "month") {
-    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1);
   } else if (range === "year") {
-    start = new Date(now.getFullYear(), 0, 1);
+    start = new Date(anchor.getFullYear(), 0, 1);
+    end = new Date(anchor.getFullYear() + 1, 0, 1);
   }
 
+  return { start, end };
+}
+
+function getMinutesForRange(range, anchorDate = new Date()) {
+  const { start, end } = getRangeBounds(range, anchorDate);
   return state.sessions
-    .filter((session) => new Date(session.completedAt) >= start)
+    .filter((session) => {
+      const completedAt = new Date(session.completedAt);
+      return completedAt >= start && completedAt < end;
+    })
     .reduce((total, session) => total + session.minutes, 0);
 }
 
-function getDisplayMinutesForRange(range) {
-  return getMinutesForRange(range) + getLiveFocusMinutes();
+function getDisplayMinutesForRange(range, anchorDate = new Date()) {
+  const { start, end } = getRangeBounds(range, anchorDate);
+  const liveMinutes = startOfDay(new Date()) >= start && startOfDay(new Date()) < end
+    ? getLiveFocusMinutes()
+    : 0;
+  return getMinutesForRange(range, anchorDate) + liveMinutes;
 }
 
 function getLiveFocusMinutes() {
@@ -1881,14 +2353,22 @@ function getLiveFocusMinutes() {
   return Number((elapsedSeconds / 60).toFixed(2));
 }
 
-function getLiveFocusHoursForItem(itemId) {
+function getLiveFocusHoursForItem(itemId, occurrenceDate = null) {
   const selectedItemId = timer.selectedItemId || timerCourseSelect.value;
   if (selectedItemId !== itemId) return 0;
+  if (occurrenceDate) {
+    const occurrenceKey = getOccurrenceDateKey(occurrenceDate);
+    const todayKey = getOccurrenceDateKey(new Date());
+    if (occurrenceKey && occurrenceKey !== todayKey) {
+      return 0;
+    }
+  }
   return Number((getLiveFocusMinutes() / 60).toFixed(2));
 }
 
-function getDisplayedActualHours(item) {
-  return Number((item.actualHours + getLiveFocusHoursForItem(item.id)).toFixed(2));
+function getDisplayedActualHours(item, occurrenceDate = null) {
+  const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
+  return Number((occurrenceEntry.actualHours + getLiveFocusHoursForItem(item.id, occurrenceDate)).toFixed(2));
 }
 
 function getTimeTargetHours(item) {
@@ -1906,18 +2386,19 @@ function formatMinutesDisplay(value) {
   return rounded.toFixed(1);
 }
 
-function getDisplayedTimeProgress(item) {
-  const displayedHours = getDisplayedActualHours(item);
+function getDisplayedTimeProgress(item, occurrenceDate = null) {
+  const displayedHours = getDisplayedActualHours(item, occurrenceDate);
   const targetHours = getTimeTargetHours(item);
+  const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
   const autoProgress = targetHours > 0
     ? Math.round(Math.min(100, (displayedHours / targetHours) * 100))
     : 0;
-  return Math.max(item.progress || 0, autoProgress);
+  return Math.max(occurrenceEntry.progress || 0, autoProgress);
 }
 
-function isStudyGoalAchieved(item) {
-  const timeDone = getTimeTargetHours(item) <= 0 ? true : getDisplayedTimeProgress(item) >= 100;
-  const contentState = getContentProgressState(item);
+function isStudyGoalAchieved(item, occurrenceDate = null) {
+  const timeDone = getTimeTargetHours(item) <= 0 ? true : getDisplayedTimeProgress(item, occurrenceDate) >= 100;
+  const contentState = getContentProgressState(item, occurrenceDate);
   const contentTargetExists = getContentTrackingConfig(item).total > 0;
   const contentDone = contentTargetExists ? contentState.percent >= 100 : true;
   return timeDone && contentDone;
@@ -1926,11 +2407,12 @@ function isStudyGoalAchieved(item) {
 function updateLiveItemDisplays() {
   document.querySelectorAll(".item-card").forEach((card) => {
     const itemId = card.dataset.itemId;
+    const occurrenceKey = card.dataset.occurrenceKey || "";
     const item = state.items.find((entry) => entry.id === itemId);
     if (!item) return;
     const progressRange = card.querySelector(".progress-range");
     const progressValue = card.querySelector(".progress-value");
-    const displayedProgress = getDisplayedTimeProgress(item);
+    const displayedProgress = getDisplayedTimeProgress(item, occurrenceKey);
     if (progressRange) {
       progressRange.value = displayedProgress;
     }
@@ -1939,7 +2421,7 @@ function updateLiveItemDisplays() {
     }
     const goalStatus = card.querySelector(".goal-status");
     if (goalStatus) {
-      const achieved = isStudyGoalAchieved(item);
+      const achieved = isStudyGoalAchieved(item, occurrenceKey);
       goalStatus.textContent = achieved ? "Study goal achieved" : "Study goal in progress";
       goalStatus.classList.toggle("complete", achieved);
       goalStatus.classList.toggle("pending", !achieved);
@@ -2304,24 +2786,36 @@ function clampDay(year, month, day) {
   return Math.min(day, new Date(year, month + 1, 0).getDate());
 }
 
-function applyCompletedPomodoroToItem(item, focusMinutes) {
+function applyCompletedPomodoroToItem(item, focusMinutes, occurrenceDate = new Date()) {
   const addedHours = focusMinutes / 60;
-  const actualHours = Number((item.actualHours + addedHours).toFixed(2));
-  const updatedItem = {
-    ...item,
+  const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
+  const actualHours = Number((occurrenceEntry.actualHours + addedHours).toFixed(2));
+  let updatedItem = mergeOccurrenceProgressEntry(item, occurrenceDate, {
     actualHours
-  };
-  const progress = getDisplayedTimeProgress(updatedItem);
+  });
+  if (!usesOccurrenceProgress(item)) {
+    updatedItem = {
+      ...updatedItem,
+      actualHours
+    };
+  }
+  const progress = getDisplayedTimeProgress(updatedItem, occurrenceDate);
   const completed = isStudyGoalAchieved({
     ...updatedItem,
     progress
+  }, occurrenceDate);
+
+  updatedItem = mergeOccurrenceProgressEntry(updatedItem, occurrenceDate, {
+    actualHours,
+    progress,
+    completed
   });
 
   return {
     ...updatedItem,
-    actualHours,
-    progress,
-    completed
+    actualHours: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.actualHours) || 0 : actualHours,
+    progress: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : progress,
+    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed
   };
 }
 
