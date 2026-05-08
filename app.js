@@ -717,7 +717,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     return;
   }
 
-  state.items = (data || []).map(deserializeTaskRecord);
+  state.items = dedupeTaskRows(data || []);
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
   debugStatus.taskLoadCount = data?.length || 0;
@@ -735,17 +735,23 @@ async function saveTaskToSupabase(item, user = null) {
     return item;
   }
 
+  let remoteTaskId = item.remoteTaskId || null;
+  if (!remoteTaskId && item?.id) {
+    const matchingRows = await findMatchingRemoteTaskRows(item, activeUser);
+    remoteTaskId = matchingRows[0]?.id || null;
+  }
+
   const payload = {
     user_id: activeUser.id,
     title: item.course || item.title || "Study plan",
     description: serializeTaskDescription(item)
   };
 
-  const query = item.remoteTaskId
+  const query = remoteTaskId
     ? supabaseClient
       .from("tasks")
       .upsert(
-        { id: item.remoteTaskId, ...payload },
+        { id: remoteTaskId, ...payload },
         { onConflict: "id" }
       )
       .select()
@@ -776,7 +782,7 @@ async function saveTaskToSupabase(item, user = null) {
 }
 
 async function deleteTaskFromSupabase(item, user = null) {
-  if (!supabaseClient || !getCurrentUser() || !item?.remoteTaskId) {
+  if (!supabaseClient || !getCurrentUser()) {
     return true;
   }
 
@@ -785,10 +791,21 @@ async function deleteTaskFromSupabase(item, user = null) {
     return false;
   }
 
+  const matchingRows = await findMatchingRemoteTaskRows(item, activeUser);
+  const remoteTaskIds = [
+    ...(item?.remoteTaskId ? [item.remoteTaskId] : []),
+    ...matchingRows.map((row) => row.id)
+  ].filter(Boolean);
+  const uniqueRemoteTaskIds = [...new Set(remoteTaskIds)];
+
+  if (!uniqueRemoteTaskIds.length) {
+    return true;
+  }
+
   const { error } = await supabaseClient
     .from("tasks")
     .delete()
-    .eq("id", item.remoteTaskId)
+    .in("id", uniqueRemoteTaskIds)
     .eq("user_id", activeUser.id);
 
   if (error) {
@@ -814,6 +831,51 @@ function serializeTaskDescription(item) {
   return JSON.stringify({
     version: 1,
     item: payload
+  });
+}
+
+function dedupeTaskRows(taskRows) {
+  const byPlannerId = new Map();
+
+  taskRows.forEach((row) => {
+    const deserialized = deserializeTaskRecord(row);
+    const existing = byPlannerId.get(deserialized.id);
+    if (!existing) {
+      byPlannerId.set(deserialized.id, { row, deserialized });
+      return;
+    }
+
+    const existingTime = new Date(existing.row.created_at || 0).getTime();
+    const nextTime = new Date(row.created_at || 0).getTime();
+    if (nextTime >= existingTime) {
+      byPlannerId.set(deserialized.id, { row, deserialized });
+    }
+  });
+
+  return [...byPlannerId.values()].map((entry) => entry.deserialized);
+}
+
+async function findMatchingRemoteTaskRows(item, activeUser) {
+  if (!supabaseClient || !activeUser?.id || !item?.id) {
+    return [];
+  }
+
+  const { data: taskRows, error: lookupError } = await supabaseClient
+    .from("tasks")
+    .select("id, title, description, created_at")
+    .eq("user_id", activeUser.id);
+
+  if (lookupError) {
+    debugStatus.userEmail = activeUser.email || getCurrentUser();
+    debugStatus.userId = activeUser.id || "";
+    debugStatus.latestSupabaseError = lookupError.message;
+    console.error("Task lookup error:", lookupError);
+    return [];
+  }
+
+  return (taskRows || []).filter((row) => {
+    const deserialized = deserializeTaskRecord(row);
+    return deserialized.id === item.id;
   });
 }
 
@@ -952,18 +1014,41 @@ async function handleAddItem(event) {
   } else {
     state.items.unshift(item);
   }
-  const savedItem = await saveTaskToSupabase(item);
-  state.items = state.items.map((entry) => entry.id === item.id ? savedItem : entry);
   saveState();
   resetPlannerForm();
   if (plannerSaveStatus) {
     plannerSaveStatus.className = "save-status full-span saved";
-    plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} locally. Syncing...`;
   }
-  if (!timerCourseSelect.value) {
-    timer.selectedItemId = savedItem.id;
+  if (!existingItem && !timer.running) {
+    timerCourseSelect.value = item.id;
+    timer.selectedItemId = item.id;
+    syncTimerWithSelection(true);
+    saveTimerSession();
+  } else if (!timerCourseSelect.value) {
+    timer.selectedItemId = item.id;
   }
   render();
+
+  try {
+    const savedItem = await saveTaskToSupabase(item);
+    state.items = state.items.map((entry) => entry.id === item.id ? savedItem : entry);
+    saveState();
+    if (plannerSaveStatus) {
+      plannerSaveStatus.className = "save-status full-span saved";
+      plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    }
+    if (timer.selectedItemId === item.id) {
+      timer.selectedItemId = savedItem.id;
+    }
+    render();
+  } catch (error) {
+    if (plannerSaveStatus) {
+      plannerSaveStatus.className = "save-status full-span pending";
+      plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} locally. Cloud sync is still pending.`;
+    }
+    render();
+  }
 }
 
 function clampNumber(value, min, max, fallback) {
