@@ -8,6 +8,7 @@ const supabaseClient = createSupabaseClient();
 
 const defaultState = {
   items: [],
+  deletedItemIds: [],
   sessions: [],
   timerSettings: {
     focusMinutes: 25,
@@ -185,6 +186,7 @@ function loadState() {
         ...item,
         pomodoro: normalizePomodoroSettings(item.pomodoro)
       })),
+      deletedItemIds: Array.isArray(stored?.deletedItemIds) ? stored.deletedItemIds : defaultState.deletedItemIds,
       sessions: stored?.sessions ?? defaultState.sessions,
       timerSettings: {
         ...defaultState.timerSettings,
@@ -680,6 +682,10 @@ function hydrateSharedPlannerStateFromUser(user) {
     state.sessions = sharedState.sessions;
   }
 
+  if (Array.isArray(sharedState.deletedItemIds)) {
+    state.deletedItemIds = sharedState.deletedItemIds;
+  }
+
   if (sharedState.timerSettings) {
     state.timerSettings = normalizePomodoroSettings(sharedState.timerSettings);
   }
@@ -710,6 +716,7 @@ async function updateProfileNameMetadata(nextName) {
       full_name: nextName,
       display_name: nextName,
       study_planner_state: {
+        deletedItemIds: state.deletedItemIds,
         sessions: state.sessions,
         timerSettings: state.timerSettings,
         timerSession: state.timerSession
@@ -725,6 +732,7 @@ async function syncSharedPlannerStateToSupabase() {
 
   const payload = {
     study_planner_state: {
+      deletedItemIds: state.deletedItemIds,
       sessions: state.sessions,
       timerSettings: state.timerSettings,
       timerSession: state.timerSession
@@ -803,7 +811,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     return false;
   }
 
-  state.items = dedupeTaskRows(data || []);
+  state.items = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
   debugStatus.taskLoadCount = data?.length || 0;
@@ -1135,6 +1143,8 @@ async function handleAddItem(event) {
     createdAt: existingItem?.createdAt || new Date().toISOString()
   };
 
+  state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
+
   item.progress = getDisplayedTimeProgress(item);
   item.completed = isStudyGoalAchieved(item);
 
@@ -1198,7 +1208,11 @@ async function handleDeletePlanFromEditor() {
   }
 
   const previousItems = [...state.items];
+  const previousDeletedIds = [...state.deletedItemIds];
   state.items = state.items.filter((entry) => entry.id !== item.id);
+  if (!state.deletedItemIds.includes(item.id)) {
+    state.deletedItemIds = [...state.deletedItemIds, item.id];
+  }
   saveState();
   resetPlannerForm();
 
@@ -1212,6 +1226,7 @@ async function handleDeletePlanFromEditor() {
     const deleteAllowed = await deleteTaskFromSupabase(item);
     if (!deleteAllowed) {
       state.items = previousItems;
+      state.deletedItemIds = previousDeletedIds;
       saveState();
       setUpdatePlanMode();
       populatePlannerForm(item);
@@ -1232,6 +1247,7 @@ async function handleDeletePlanFromEditor() {
     void refreshTasksFromSupabase({ renderAfter: true });
   } catch (error) {
     state.items = previousItems;
+    state.deletedItemIds = previousDeletedIds;
     saveState();
     setUpdatePlanMode();
     populatePlannerForm(item);
@@ -1770,6 +1786,7 @@ function renderItems() {
 
     deleteButton.addEventListener("click", async () => {
       const previousItems = [...state.items];
+      const previousDeletedIds = [...state.deletedItemIds];
       deleteButton.disabled = true;
       deleteButton.textContent = "Deleting...";
       saveFeedbackByItemId[item.id] = {
@@ -1778,6 +1795,9 @@ function renderItems() {
       };
 
       state.items = state.items.filter((entry) => entry.id !== item.id);
+      if (!state.deletedItemIds.includes(item.id)) {
+        state.deletedItemIds = [...state.deletedItemIds, item.id];
+      }
       saveState();
       render();
 
@@ -1785,6 +1805,7 @@ function renderItems() {
         const deleteAllowed = await deleteTaskFromSupabase(item);
         if (!deleteAllowed) {
           state.items = previousItems;
+          state.deletedItemIds = previousDeletedIds;
           saveFeedbackByItemId[item.id] = {
             tone: "pending",
             text: "Delete failed"
@@ -1796,6 +1817,7 @@ function renderItems() {
         void refreshTasksFromSupabase({ renderAfter: true });
       } catch (error) {
         state.items = previousItems;
+        state.deletedItemIds = previousDeletedIds;
         debugStatus.latestSupabaseError = error?.message || "Delete failed";
         window.alert(`Task delete error: ${error?.message || "Delete failed"}`);
         saveFeedbackByItemId[item.id] = {
