@@ -163,10 +163,12 @@ initializeSectionNavigation();
 function loadAuthState() {
   try {
     const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
+    const rememberedUser = stored?.rememberedUser ?? null;
+    const normalizedCurrentUser = stored?.currentUser || rememberedUser?.email || "";
     return {
-      currentUser: stored?.currentUser ?? "",
+      currentUser: normalizedCurrentUser,
       lastEmail: stored?.lastEmail ?? "",
-      rememberedUser: stored?.rememberedUser ?? null
+      rememberedUser
     };
   } catch (error) {
     return {
@@ -1217,13 +1219,13 @@ async function handleDeletePlanFromEditor() {
   resetPlannerForm();
 
   if (plannerSaveStatus) {
-    plannerSaveStatus.className = "save-status full-span pending";
-    plannerSaveStatus.textContent = "Deleting plan...";
+    plannerSaveStatus.className = "save-status full-span saved";
+    plannerSaveStatus.textContent = `Plan deleted ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    schedulePlannerSaveStatusClear();
   }
   render();
 
-  try {
-    const deleteAllowed = await deleteTaskFromSupabase(item);
+  void deleteTaskFromSupabase(item).then((deleteAllowed) => {
     if (!deleteAllowed) {
       state.items = previousItems;
       state.deletedItemIds = previousDeletedIds;
@@ -1238,14 +1240,8 @@ async function handleDeletePlanFromEditor() {
       return;
     }
 
-    if (plannerSaveStatus) {
-      plannerSaveStatus.className = "save-status full-span saved";
-      plannerSaveStatus.textContent = `Plan deleted ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-      schedulePlannerSaveStatusClear();
-    }
-    render();
     void refreshTasksFromSupabase({ renderAfter: true });
-  } catch (error) {
+  }).catch(() => {
     state.items = previousItems;
     state.deletedItemIds = previousDeletedIds;
     saveState();
@@ -1256,7 +1252,7 @@ async function handleDeletePlanFromEditor() {
       plannerSaveStatus.textContent = "Delete failed. Please try again.";
     }
     render();
-  }
+  });
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1561,7 +1557,8 @@ function syncExistingPlanOptions() {
 
 function render() {
   const signedInUser = getCurrentUser();
-  const isSignedIn = hasActiveSession && Boolean(currentSessionUser?.id || signedInUser);
+  const rememberedEmail = authState?.rememberedUser?.email || "";
+  const isSignedIn = Boolean(rememberedEmail) || (hasActiveSession && Boolean(currentSessionUser?.id || signedInUser));
   if (appShell) {
     appShell.hidden = !isSignedIn;
   }
@@ -1788,10 +1785,10 @@ function renderItems() {
       const previousItems = [...state.items];
       const previousDeletedIds = [...state.deletedItemIds];
       deleteButton.disabled = true;
-      deleteButton.textContent = "Deleting...";
+      deleteButton.textContent = "Deleted";
       saveFeedbackByItemId[item.id] = {
-        tone: "pending",
-        text: "Deleting plan..."
+        tone: "saved",
+        text: `Deleted ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
       };
 
       state.items = state.items.filter((entry) => entry.id !== item.id);
@@ -3248,7 +3245,7 @@ function getStudyLabel(item) {
 }
 
 function getCurrentUser() {
-  return authState?.currentUser || "";
+  return authState?.currentUser || authState?.rememberedUser?.email || "";
 }
 
 function getPlannerStorageKey() {
