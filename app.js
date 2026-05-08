@@ -64,6 +64,7 @@ const existingPlanIdInput = document.getElementById("existingPlanId");
 const createPlanModeButton = document.getElementById("createPlanModeButton");
 const updatePlanModeButton = document.getElementById("updatePlanModeButton");
 const savePlanButton = document.getElementById("savePlanButton");
+const deletePlanButton = document.getElementById("deletePlanButton");
 const layout = document.querySelector(".layout");
 const plannerSaveStatus = document.getElementById("plannerSaveStatus");
 const itemsList = document.getElementById("itemsList");
@@ -107,6 +108,9 @@ let trendCursor = startOfDay(new Date());
 let saveFeedbackByItemId = {};
 let profileDisplayName = "";
 let sharedStateSyncTimeout = null;
+let plannerStatusClearTimeout = null;
+let taskRefreshInFlight = false;
+let taskSyncIntervalId = null;
 let activePageHash = "#tasksSection";
 let topShellHidden = false;
 let hasActiveSession = false;
@@ -134,6 +138,7 @@ form.addEventListener("submit", handleAddItem);
 existingPlanIdInput.addEventListener("change", handleExistingPlanSelection);
 createPlanModeButton.addEventListener("click", setCreatePlanMode);
 updatePlanModeButton.addEventListener("click", setUpdatePlanMode);
+deletePlanButton?.addEventListener("click", handleDeletePlanFromEditor);
 timelineControls.addEventListener("click", handleTimelineChange);
 timelinePrevButton.addEventListener("click", () => shiftTimelineWindow(-1));
 timelineNextButton.addEventListener("click", () => shiftTimelineWindow(1));
@@ -205,7 +210,9 @@ function saveSupabaseSession(session) {
 
   localStorage.setItem(SUPABASE_SESSION_STORAGE_KEY, JSON.stringify({
     access_token: session.access_token,
-    refresh_token: session.refresh_token
+    refresh_token: session.refresh_token,
+    expires_at: session.expires_at || null,
+    user: session.user || null
   }));
 }
 
@@ -217,7 +224,9 @@ function loadSupabaseSession() {
     }
     return {
       access_token: stored.access_token,
-      refresh_token: stored.refresh_token
+      refresh_token: stored.refresh_token,
+      expires_at: stored.expires_at || null,
+      user: stored.user || null
     };
   } catch (error) {
     return null;
@@ -448,21 +457,37 @@ async function initializeAuth() {
 
   isInitializingAuth = true;
   try {
-    let { data, error } = await supabaseClient.auth.getSession();
-    if (error) {
-      authMessage.textContent = error.message;
+    const cachedSession = loadSupabaseSession();
+    if (cachedSession?.user?.email) {
+      await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
+    }
+
+    let data = null;
+    let error = null;
+
+    if (cachedSession?.access_token && cachedSession?.refresh_token) {
+      const restored = await supabaseClient.auth.setSession({
+        access_token: cachedSession.access_token,
+        refresh_token: cachedSession.refresh_token
+      });
+      if (!restored.error && restored.data?.session) {
+        data = restored.data;
+        saveSupabaseSession(restored.data.session);
+      } else {
+        error = restored.error || null;
+      }
     }
 
     if (!data?.session) {
-      const cachedSession = loadSupabaseSession();
-      if (cachedSession?.access_token && cachedSession?.refresh_token) {
-        const restored = await supabaseClient.auth.setSession(cachedSession);
-        if (!restored.error && restored.data?.session) {
-          data = restored.data;
-          error = null;
-          saveSupabaseSession(restored.data.session);
-        }
+      const sessionResult = await supabaseClient.auth.getSession();
+      data = sessionResult.data;
+      if (sessionResult.error) {
+        error = sessionResult.error;
       }
+    }
+
+    if (error) {
+      authMessage.textContent = error.message;
     }
 
     const sessionEmail = data?.session?.user?.email || "";
@@ -510,7 +535,11 @@ async function applySignedInUser(email, user = null, options = {}) {
   authState.currentUser = email;
   authState.lastEmail = email;
   saveAuthState();
-  state = loadState();
+  const restoredState = loadState();
+  state = {
+    ...restoredState,
+    items: []
+  };
   hasActiveSession = true;
   currentSessionUser = user || null;
   authPanelCollapsed = false;
@@ -520,6 +549,7 @@ async function applySignedInUser(email, user = null, options = {}) {
   debugStatus.userId = user?.id || debugStatus.userId || "";
   hydrateSharedPlannerStateFromUser(user);
   timer = createDefaultTimer();
+  startTaskSyncLoop();
   if (!options.silent) {
     render();
   }
@@ -533,6 +563,7 @@ function applySignedOutUser(options = {}) {
     window.clearTimeout(sharedStateSyncTimeout);
     sharedStateSyncTimeout = null;
   }
+  stopTaskSyncLoop();
   authState.currentUser = "";
   saveAuthState();
   state = JSON.parse(JSON.stringify(defaultState));
@@ -725,18 +756,61 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   saveState();
 }
 
-async function saveTaskToSupabase(item, user = null) {
+async function refreshTasksFromSupabase(options = {}) {
+  if (!hasActiveSession || taskRefreshInFlight) {
+    return;
+  }
+
+  taskRefreshInFlight = true;
+  try {
+    const previousSelectedItemId = timer.selectedItemId;
+    await loadTasksFromSupabase(currentSessionUser, { silent: true });
+
+    if (previousSelectedItemId && !state.items.some((item) => item.id === previousSelectedItemId)) {
+      timer.selectedItemId = state.items[0]?.id || "";
+      saveTimerSession();
+    }
+
+    if (options.renderAfter !== false) {
+      render();
+    }
+  } finally {
+    taskRefreshInFlight = false;
+  }
+}
+
+function startTaskSyncLoop() {
+  stopTaskSyncLoop();
+  if (!hasActiveSession || !supabaseClient) {
+    return;
+  }
+
+  taskSyncIntervalId = window.setInterval(() => {
+    void refreshTasksFromSupabase({ renderAfter: true });
+  }, 15000);
+}
+
+function stopTaskSyncLoop() {
+  if (!taskSyncIntervalId) {
+    return;
+  }
+
+  window.clearInterval(taskSyncIntervalId);
+  taskSyncIntervalId = null;
+}
+
+async function saveTaskToSupabase(item, user = null, options = {}) {
   if (!supabaseClient || !getCurrentUser()) {
-    return item;
+    throw new Error("Sign in is required before this plan can sync.");
   }
 
   const activeUser = user || await getAuthenticatedSupabaseUser();
   if (!activeUser?.id) {
-    return item;
+    throw new Error("We could not confirm your signed-in session. Please sign in again.");
   }
 
   let remoteTaskId = item.remoteTaskId || null;
-  if (!remoteTaskId && item?.id) {
+  if (!remoteTaskId && item?.id && !options.skipRemoteLookup) {
     const matchingRows = await findMatchingRemoteTaskRows(item, activeUser);
     remoteTaskId = matchingRows[0]?.id || null;
   }
@@ -768,8 +842,7 @@ async function saveTaskToSupabase(item, user = null) {
     debugStatus.latestSaveStatus = "Task save failed";
     debugStatus.latestSupabaseError = error.message;
     console.error("Task save error:", error);
-    window.alert(`Task save error: ${error.message}`);
-    return item;
+    throw new Error(error.message);
   }
 
   const savedRow = Array.isArray(data) ? data[0] : data;
@@ -951,18 +1024,14 @@ async function getAuthenticatedSupabaseUser() {
   if (error) {
     console.error("Auth user lookup error:", error);
     debugStatus.latestSupabaseError = error.message;
-    return null;
+    return currentSessionUser || null;
   }
 
-  return data.user || null;
+  return data.user || currentSessionUser || null;
 }
 
 async function handleAddItem(event) {
   event.preventDefault();
-  if (plannerSaveStatus) {
-    plannerSaveStatus.className = "save-status full-span pending";
-    plannerSaveStatus.textContent = "Saving plan...";
-  }
   const data = new FormData(form);
   const editingItemId = editingItemIdInput.value;
   const existingItem = state.items.find((item) => item.id === editingItemId);
@@ -1031,21 +1100,83 @@ async function handleAddItem(event) {
   render();
 
   try {
-    const savedItem = await saveTaskToSupabase(item);
+    const savedItem = await saveTaskToSupabase(item, null, {
+      skipRemoteLookup: !existingItem
+    });
     state.items = state.items.map((entry) => entry.id === item.id ? savedItem : entry);
     saveState();
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span saved";
       plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      schedulePlannerSaveStatusClear();
     }
     if (timer.selectedItemId === item.id) {
       timer.selectedItemId = savedItem.id;
     }
     render();
+    void refreshTasksFromSupabase({ renderAfter: true });
   } catch (error) {
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span pending";
-      plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} locally. Cloud sync is still pending.`;
+      plannerSaveStatus.textContent = error?.message || `${existingItem ? "Plan updated" : "Plan saved"} locally. Cloud sync is still pending.`;
+    }
+    render();
+  }
+}
+
+async function handleDeletePlanFromEditor() {
+  const editingItemId = editingItemIdInput.value || existingPlanIdInput.value;
+  const item = state.items.find((entry) => entry.id === editingItemId);
+
+  if (!item) {
+    if (plannerSaveStatus) {
+      plannerSaveStatus.className = "save-status full-span pending";
+      plannerSaveStatus.textContent = "Choose a plan to delete first.";
+    }
+    return;
+  }
+
+  const previousItems = [...state.items];
+  state.items = state.items.filter((entry) => entry.id !== item.id);
+  saveState();
+  resetPlannerForm();
+
+  if (plannerSaveStatus) {
+    plannerSaveStatus.className = "save-status full-span pending";
+    plannerSaveStatus.textContent = "Deleting plan...";
+  }
+  render();
+
+  try {
+    const deleteAllowed = await deleteTaskFromSupabase(item);
+    if (!deleteAllowed) {
+      state.items = previousItems;
+      saveState();
+      setUpdatePlanMode();
+      populatePlannerForm(item);
+      if (plannerSaveStatus) {
+        plannerSaveStatus.className = "save-status full-span pending";
+        plannerSaveStatus.textContent = "Delete failed. Please try again.";
+      }
+      render();
+      return;
+    }
+
+    if (plannerSaveStatus) {
+      plannerSaveStatus.className = "save-status full-span saved";
+      plannerSaveStatus.textContent = `Plan deleted ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      schedulePlannerSaveStatusClear();
+    }
+    render();
+    void refreshTasksFromSupabase({ renderAfter: true });
+  } catch (error) {
+    state.items = previousItems;
+    saveState();
+    setUpdatePlanMode();
+    populatePlannerForm(item);
+    if (plannerSaveStatus) {
+      plannerSaveStatus.className = "save-status full-span pending";
+      plannerSaveStatus.textContent = "Delete failed. Please try again.";
     }
     render();
   }
@@ -1210,7 +1341,9 @@ function completeTimerStage() {
       ));
       const updatedItem = state.items.find((item) => item.id === completedItemId);
       if (updatedItem) {
-        saveTaskToSupabase(updatedItem);
+        void saveTaskToSupabase(updatedItem).catch((error) => {
+          debugStatus.latestSupabaseError = error?.message || "Task save failed";
+        });
       }
     }
 
@@ -1236,6 +1369,7 @@ function setCreatePlanMode() {
 
 function setUpdatePlanMode() {
   planEditorMode = "update";
+  clearPlannerSaveStatus();
   renderPlannerMode();
   existingPlanIdInput.focus();
 }
@@ -1244,6 +1378,8 @@ function handleExistingPlanSelection() {
   const selectedItem = state.items.find((item) => item.id === existingPlanIdInput.value);
   if (!selectedItem) {
     editingItemIdInput.value = "";
+    clearPlannerSaveStatus();
+    renderPlannerMode();
     return;
   }
 
@@ -1252,6 +1388,7 @@ function handleExistingPlanSelection() {
 }
 
 function populatePlannerForm(item) {
+  planEditorMode = "update";
   editingItemIdInput.value = item.id;
   form.elements.course.value = item.course || "";
   form.elements.plannedHours.value = item.plannedHours || "";
@@ -1270,6 +1407,7 @@ function populatePlannerForm(item) {
   form.elements.itemAlertSound.value = item.pomodoro?.alertSound || "phone";
   existingPlanIdInput.value = item.id;
   syncCustomContentField();
+  renderPlannerMode();
 }
 
 function resetPlannerForm() {
@@ -1280,18 +1418,47 @@ function resetPlannerForm() {
   contentUnitTypeInput.value = "pages";
   syncCustomContentField();
   planEditorMode = "create";
+  clearPlannerSaveStatus();
   renderPlannerMode();
 }
 
 function renderPlannerMode() {
   const isUpdating = planEditorMode === "update";
+  const hasSelectedPlan = Boolean(editingItemIdInput.value || existingPlanIdInput.value);
   existingPlanField.hidden = !isUpdating;
   createPlanModeButton.classList.toggle("primary-btn", !isUpdating);
   createPlanModeButton.classList.toggle("ghost-btn", isUpdating);
   updatePlanModeButton.classList.toggle("primary-btn", isUpdating);
   updatePlanModeButton.classList.toggle("ghost-btn", !isUpdating);
   savePlanButton.textContent = isUpdating ? "Update study plan" : "Save study item";
+  if (deletePlanButton) {
+    deletePlanButton.hidden = !isUpdating;
+    deletePlanButton.disabled = !hasSelectedPlan;
+  }
   syncExistingPlanOptions();
+}
+
+function clearPlannerSaveStatus() {
+  if (plannerStatusClearTimeout) {
+    window.clearTimeout(plannerStatusClearTimeout);
+    plannerStatusClearTimeout = null;
+  }
+  if (!plannerSaveStatus) {
+    return;
+  }
+
+  plannerSaveStatus.className = "save-status full-span";
+  plannerSaveStatus.textContent = "";
+}
+
+function schedulePlannerSaveStatusClear(delay = 2200) {
+  if (plannerStatusClearTimeout) {
+    window.clearTimeout(plannerStatusClearTimeout);
+  }
+  plannerStatusClearTimeout = window.setTimeout(() => {
+    plannerStatusClearTimeout = null;
+    clearPlannerSaveStatus();
+  }, delay);
 }
 
 function syncCustomContentField() {
@@ -1513,14 +1680,31 @@ function renderItems() {
           }, occurrenceDate))
           : entry
       ));
-      updatedItem = await saveTaskToSupabase(updatedItem || item);
-      state.items = state.items.map((entry) => entry.id === item.id ? updatedItem : entry);
       saveFeedbackByItemId[saveFeedbackKey] = {
         tone: "saved",
-        text: `Saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+        text: "Saved locally. Syncing..."
       };
       saveState();
       render();
+
+      try {
+        updatedItem = await saveTaskToSupabase(updatedItem || item);
+        state.items = state.items.map((entry) => entry.id === item.id ? updatedItem : entry);
+        saveFeedbackByItemId[saveFeedbackKey] = {
+          tone: "saved",
+          text: `Saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+        };
+        saveState();
+        render();
+        void refreshTasksFromSupabase({ renderAfter: true });
+      } catch (error) {
+        saveFeedbackByItemId[saveFeedbackKey] = {
+          tone: "pending",
+          text: error?.message || "Cloud sync is still pending."
+        };
+        saveState();
+        render();
+      }
     });
 
     deleteButton.addEventListener("click", async () => {
@@ -1546,7 +1730,9 @@ function renderItems() {
           };
           saveState();
           render();
+          return;
         }
+        void refreshTasksFromSupabase({ renderAfter: true });
       } catch (error) {
         state.items = previousItems;
         debugStatus.latestSupabaseError = error?.message || "Delete failed";
@@ -2377,6 +2563,9 @@ function syncTimerClock() {
 
 function handleTimerVisibilityChange() {
   syncTimerClock();
+  if (hasActiveSession) {
+    void refreshTasksFromSupabase({ renderAfter: false });
+  }
   render();
 }
 

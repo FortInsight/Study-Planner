@@ -516,6 +516,32 @@ button {
   gap: 10px;
 }
 
+.planner-action-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.planner-action-row .primary-btn,
+.planner-action-row .delete-btn {
+  width: auto;
+  min-width: 170px;
+}
+
+.planner-action-row .delete-btn {
+  background: linear-gradient(180deg, #ff7b7b 0%, #d63a3a 100%);
+  color: #fff6f6;
+  border: 1px solid rgba(255, 182, 182, 0.28);
+}
+
+.planner-action-row .delete-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
 label {
   display: grid;
   gap: 8px;
