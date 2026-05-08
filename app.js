@@ -164,12 +164,14 @@ function loadAuthState() {
     const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY));
     return {
       currentUser: stored?.currentUser ?? "",
-      lastEmail: stored?.lastEmail ?? ""
+      lastEmail: stored?.lastEmail ?? "",
+      rememberedUser: stored?.rememberedUser ?? null
     };
   } catch (error) {
     return {
       currentUser: "",
-      lastEmail: ""
+      lastEmail: "",
+      rememberedUser: null
     };
   }
 }
@@ -274,6 +276,12 @@ async function handleRegister() {
 
   if (data.session?.user?.email) {
     saveSupabaseSession(data.session);
+    authState.rememberedUser = {
+      email: data.session.user.email || email,
+      id: data.session.user.id || "",
+      user_metadata: data.session.user.user_metadata || {}
+    };
+    saveAuthState();
     await applySignedInUser(data.session.user.email, data.session.user);
     void ensureSupabaseProfile(data.session.user);
     authMessage.textContent = "Account created and signed in.";
@@ -328,6 +336,12 @@ async function handleLogin(event) {
     if (signInData?.session) {
       saveSupabaseSession(signInData.session);
     }
+    authState.rememberedUser = {
+      email: signedInUser.email || email,
+      id: signedInUser.id || "",
+      user_metadata: signedInUser.user_metadata || {}
+    };
+    saveAuthState();
     await applySignedInUser(signedInUser.email || email, signedInUser);
     void ensureSupabaseProfile(signedInUser);
 
@@ -412,6 +426,8 @@ async function handleLogout() {
   isManualSignOut = true;
   pauseTimer();
   clearSupabaseSession();
+  authState.rememberedUser = null;
+  saveAuthState();
   if (!supabaseClient) {
     applySignedOutUser();
     authMessage.textContent = "Signed out.";
@@ -464,9 +480,12 @@ async function initializeAuth() {
   isInitializingAuth = true;
   const cachedSession = loadSupabaseSession();
   const hasCachedUser = Boolean(cachedSession?.user?.email);
+  const rememberedUser = authState.rememberedUser;
   try {
     if (cachedSession?.user?.email) {
       await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
+    } else if (rememberedUser?.email) {
+      await applySignedInUser(rememberedUser.email, rememberedUser, { silent: true });
     }
 
     let data = null;
@@ -501,11 +520,11 @@ async function initializeAuth() {
     if (sessionEmail) {
       await ensureSupabaseProfile(data.session.user);
       await applySignedInUser(sessionEmail, data.session.user, { silent: true });
-    } else if (!hasCachedUser) {
+    } else if (!hasCachedUser && !rememberedUser?.email) {
       applySignedOutUser({ silent: true });
     }
   } catch (error) {
-    if (!hasCachedUser) {
+    if (!hasCachedUser && !rememberedUser?.email) {
       applySignedOutUser({ silent: true });
       authMessage.textContent = "We could not initialize Supabase sign in right now.";
     }
@@ -532,6 +551,14 @@ async function initializeAuth() {
       return;
     }
 
+    if (!isManualSignOut && authState.rememberedUser?.email) {
+      if (!hasActiveSession || !currentSessionUser?.id) {
+        await applySignedInUser(authState.rememberedUser.email, authState.rememberedUser, { silent: true });
+      }
+      render();
+      return;
+    }
+
     if (
       cachedSession?.access_token
       && cachedSession?.refresh_token
@@ -551,6 +578,11 @@ async function initializeAuth() {
 async function applySignedInUser(email, user = null, options = {}) {
   authState.currentUser = email;
   authState.lastEmail = email;
+  authState.rememberedUser = user?.email ? {
+    email: user.email,
+    id: user.id || "",
+    user_metadata: user.user_metadata || {}
+  } : authState.rememberedUser;
   saveAuthState();
   const restoredState = loadState();
   state = {
@@ -582,6 +614,7 @@ function applySignedOutUser(options = {}) {
   }
   stopTaskSyncLoop();
   authState.currentUser = "";
+  authState.rememberedUser = null;
   saveAuthState();
   state = JSON.parse(JSON.stringify(defaultState));
   timer = createDefaultTimer();
@@ -741,12 +774,12 @@ async function ensureSupabaseProfile(user) {
 
 async function loadTasksFromSupabase(user = null, options = {}) {
   if (!supabaseClient || !getCurrentUser()) {
-    return;
+    return false;
   }
 
   const activeUser = user || await getAuthenticatedSupabaseUser();
   if (!activeUser?.id) {
-    return;
+    return false;
   }
 
   const { data, error } = await supabaseClient
@@ -762,7 +795,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     if (!options.silent) {
       window.alert(`Task load error: ${error.message}`);
     }
-    return;
+    return false;
   }
 
   state.items = dedupeTaskRows(data || []);
@@ -771,6 +804,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   debugStatus.taskLoadCount = data?.length || 0;
   debugStatus.latestSupabaseError = "None";
   saveState();
+  return true;
 }
 
 async function refreshTasksFromSupabase(options = {}) {
@@ -781,7 +815,11 @@ async function refreshTasksFromSupabase(options = {}) {
   taskRefreshInFlight = true;
   try {
     const previousSelectedItemId = timer.selectedItemId;
-    await loadTasksFromSupabase(currentSessionUser, { silent: true });
+    const refreshed = await loadTasksFromSupabase(currentSessionUser, { silent: true });
+
+    if (!refreshed) {
+      return;
+    }
 
     if (previousSelectedItemId && !state.items.some((item) => item.id === previousSelectedItemId)) {
       timer.selectedItemId = state.items[0]?.id || "";
@@ -818,12 +856,12 @@ function stopTaskSyncLoop() {
 
 async function saveTaskToSupabase(item, user = null, options = {}) {
   if (!supabaseClient || !getCurrentUser()) {
-    throw new Error("Sign in is required before this plan can sync.");
+    throw new Error("Plan saved on this device. Sign in again to sync it to the cloud.");
   }
 
   const activeUser = user || await getAuthenticatedSupabaseUser();
   if (!activeUser?.id) {
-    throw new Error("We could not confirm your signed-in session. Please sign in again.");
+    throw new Error("Plan saved on this device. Cloud sync will resume after you sign in again.");
   }
 
   let remoteTaskId = item.remoteTaskId || null;
@@ -1041,10 +1079,10 @@ async function getAuthenticatedSupabaseUser() {
   if (error) {
     console.error("Auth user lookup error:", error);
     debugStatus.latestSupabaseError = error.message;
-    return currentSessionUser || null;
+    return null;
   }
 
-  return data.user || currentSessionUser || null;
+  return data.user || null;
 }
 
 async function handleAddItem(event) {
@@ -1104,7 +1142,8 @@ async function handleAddItem(event) {
   resetPlannerForm();
   if (plannerSaveStatus) {
     plannerSaveStatus.className = "save-status full-span saved";
-    plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} locally. Syncing...`;
+    plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    schedulePlannerSaveStatusClear();
   }
   if (!existingItem && !timer.running) {
     timerCourseSelect.value = item.id;
@@ -1135,7 +1174,7 @@ async function handleAddItem(event) {
   } catch (error) {
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span pending";
-      plannerSaveStatus.textContent = error?.message || `${existingItem ? "Plan updated" : "Plan saved"} locally. Cloud sync is still pending.`;
+      plannerSaveStatus.textContent = error?.message || `${existingItem ? "Plan updated" : "Plan saved"} on this device. Cloud sync is pending.`;
     }
     render();
   }
