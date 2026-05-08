@@ -1,4 +1,4 @@
-const CACHE_NAME = "study-planner-pwa-v2";
+const CACHE_NAME = "study-planner-pwa-v3";
 const APP_ASSETS = [
   "./",
   "./index.html",
@@ -33,17 +33,30 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
+  const requestUrl = new URL(event.request.url);
+  const isSameOrigin = requestUrl.origin === self.location.origin;
+  const isAppShellRequest = isSameOrigin && (
+    event.request.mode === "navigate"
+    || APP_ASSETS.some((asset) => requestUrl.pathname.endsWith(asset.replace("./", "/")))
+  );
 
-      return fetch(event.request).then((networkResponse) => {
+  event.respondWith(
+    isAppShellRequest
+      ? fetch(event.request).then((networkResponse) => {
         const responseClone = networkResponse.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
         return networkResponse;
-      }).catch(() => caches.match("./index.html"));
-    })
+      }).catch(() => caches.match(event.request).then((cachedResponse) => cachedResponse || caches.match("./index.html")))
+      : caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+
+        return fetch(event.request).then((networkResponse) => {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+          return networkResponse;
+        }).catch(() => caches.match("./index.html"));
+      })
   );
 });
