@@ -818,12 +818,16 @@ async function loadTasksFromSupabase(user = null, options = {}) {
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
 
-  // Merge: keep any locally-saved items not yet in Supabase (e.g. a goal saved
-  // just before a refresh where the insert hadn't propagated yet). Remote wins
-  // for items that exist in both; local-only items are preserved so they aren't lost.
+  // Merge remote items with locally-saved items not yet reflected in Supabase.
+  // Match by both id AND remoteTaskId to handle the case where a freshly
+  // inserted row is returned from Supabase with a different key than local.
   const remoteIds = new Set(remoteItems.map((item) => item.id));
+  const remoteTaskIds = new Set(remoteItems.map((item) => item.remoteTaskId).filter(Boolean));
   const localOnlyItems = state.items.filter(
-    (item) => !remoteIds.has(item.id) && !state.deletedItemIds.includes(item.id)
+    (item) =>
+      !remoteIds.has(item.id) &&
+      !(item.remoteTaskId && remoteTaskIds.has(item.remoteTaskId)) &&
+      !state.deletedItemIds.includes(item.id)
   );
   state.items = [...remoteItems, ...localOnlyItems];
 
@@ -929,6 +933,18 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
   }
 
   const savedRow = Array.isArray(data) ? data[0] : data;
+
+  // For new inserts: re-save the description with remoteTaskId embedded so
+  // deserializeTaskRecord can always recover the local id on next load.
+  if (!remoteTaskId && savedRow?.id) {
+    const itemWithRemote = { ...item, remoteTaskId: savedRow.id };
+    await supabaseClient
+      .from("tasks")
+      .update({ description: serializeTaskDescription(itemWithRemote) })
+      .eq("id", savedRow.id)
+      .eq("user_id", activeUser.id);
+  }
+
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
   debugStatus.latestSaveStatus = `Task saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
