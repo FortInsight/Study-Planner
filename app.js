@@ -527,6 +527,8 @@ async function initializeAuth() {
     if (!hasCachedUser && !rememberedUser?.email) {
       applySignedOutUser({ silent: true });
       authMessage.textContent = "We could not initialize Supabase sign in right now.";
+    } else if (rememberedUser?.email) {
+      await applySignedInUser(rememberedUser.email, rememberedUser, { silent: true });
     }
   } finally {
     isInitializingAuth = false;
@@ -568,7 +570,7 @@ async function initializeAuth() {
     }
 
     clearSupabaseSession();
-    applySignedOutUser({ silent: true });
+    applySignedOutUser({ silent: true, preserveRememberedUser: !isManualSignOut });
     render();
   });
 
@@ -584,11 +586,7 @@ async function applySignedInUser(email, user = null, options = {}) {
     user_metadata: user.user_metadata || {}
   } : authState.rememberedUser;
   saveAuthState();
-  const restoredState = loadState();
-  state = {
-    ...restoredState,
-    items: []
-  };
+  state = loadState();
   hasActiveSession = true;
   currentSessionUser = user || null;
   authPanelCollapsed = false;
@@ -602,8 +600,10 @@ async function applySignedInUser(email, user = null, options = {}) {
   if (!options.silent) {
     render();
   }
-  void loadTasksFromSupabase(user, { silent: true }).then(() => {
-    render();
+  void loadTasksFromSupabase(user, { silent: true }).then((loaded) => {
+    if (loaded) {
+      render();
+    }
   });
 }
 
@@ -613,21 +613,26 @@ function applySignedOutUser(options = {}) {
     sharedStateSyncTimeout = null;
   }
   stopTaskSyncLoop();
-  authState.currentUser = "";
-  authState.rememberedUser = null;
+  const preservedUser = options.preserveRememberedUser ? authState.rememberedUser : null;
+  authState.currentUser = preservedUser?.email || "";
+  if (!options.preserveRememberedUser) {
+    authState.rememberedUser = null;
+  }
   saveAuthState();
-  state = JSON.parse(JSON.stringify(defaultState));
-  timer = createDefaultTimer();
-  hasActiveSession = false;
-  currentSessionUser = null;
+  if (!options.preserveRememberedUser) {
+    state = JSON.parse(JSON.stringify(defaultState));
+    timer = createDefaultTimer();
+  }
+  hasActiveSession = Boolean(preservedUser?.email);
+  currentSessionUser = preservedUser || null;
   authPanelCollapsed = false;
   topShellHidden = false;
-  profileDisplayName = "";
-  debugStatus.userEmail = "";
-  debugStatus.userId = "";
-  debugStatus.taskLoadCount = 0;
-  debugStatus.latestSaveStatus = "No task save yet";
-  debugStatus.latestSupabaseError = "None";
+  profileDisplayName = preservedUser ? getDisplayNameFromUser(preservedUser) : "";
+  debugStatus.userEmail = preservedUser?.email || "";
+  debugStatus.userId = preservedUser?.id || "";
+  debugStatus.taskLoadCount = preservedUser ? state.items.length : 0;
+  debugStatus.latestSaveStatus = preservedUser ? debugStatus.latestSaveStatus : "No task save yet";
+  debugStatus.latestSupabaseError = preservedUser ? debugStatus.latestSupabaseError : "None";
   if (!options.silent) {
     render();
   }
