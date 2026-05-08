@@ -116,6 +116,7 @@ let topShellHidden = false;
 let hasActiveSession = false;
 let currentSessionUser = null;
 let isInitializingAuth = false;
+let isManualSignOut = false;
 let debugStatus = {
   userEmail: "",
   userId: "",
@@ -408,11 +409,13 @@ async function handleProfileNameSave() {
 }
 
 async function handleLogout() {
+  isManualSignOut = true;
   pauseTimer();
   clearSupabaseSession();
   if (!supabaseClient) {
     applySignedOutUser();
     authMessage.textContent = "Signed out.";
+    isManualSignOut = false;
     return;
   }
 
@@ -421,6 +424,7 @@ async function handleLogout() {
     if (error) {
       applySignedOutUser();
       authMessage.textContent = `Signed out on this device. Supabase sign-out warning: ${error.message}`;
+      isManualSignOut = false;
       return;
     }
 
@@ -429,6 +433,8 @@ async function handleLogout() {
   } catch (error) {
     applySignedOutUser();
     authMessage.textContent = "Signed out on this device.";
+  } finally {
+    isManualSignOut = false;
   }
 }
 
@@ -456,8 +462,9 @@ async function initializeAuth() {
   }
 
   isInitializingAuth = true;
+  const cachedSession = loadSupabaseSession();
+  const hasCachedUser = Boolean(cachedSession?.user?.email);
   try {
-    const cachedSession = loadSupabaseSession();
     if (cachedSession?.user?.email) {
       await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
     }
@@ -494,12 +501,14 @@ async function initializeAuth() {
     if (sessionEmail) {
       await ensureSupabaseProfile(data.session.user);
       await applySignedInUser(sessionEmail, data.session.user, { silent: true });
-    } else {
+    } else if (!hasCachedUser) {
       applySignedOutUser({ silent: true });
     }
   } catch (error) {
-    applySignedOutUser({ silent: true });
-    authMessage.textContent = "We could not initialize Supabase sign in right now.";
+    if (!hasCachedUser) {
+      applySignedOutUser({ silent: true });
+      authMessage.textContent = "We could not initialize Supabase sign in right now.";
+    }
   } finally {
     isInitializingAuth = false;
   }
@@ -515,6 +524,14 @@ async function initializeAuth() {
     }
 
     const cachedSession = loadSupabaseSession();
+    if (!isManualSignOut && cachedSession?.user?.email) {
+      if (!hasActiveSession || !currentSessionUser?.id) {
+        await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
+      }
+      render();
+      return;
+    }
+
     if (
       cachedSession?.access_token
       && cachedSession?.refresh_token
