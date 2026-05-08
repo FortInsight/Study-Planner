@@ -816,7 +816,17 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     return false;
   }
 
-  state.items = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
+  const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
+
+  // Merge: keep any locally-saved items not yet in Supabase (e.g. a goal saved
+  // just before a refresh where the insert hadn't propagated yet). Remote wins
+  // for items that exist in both; local-only items are preserved so they aren't lost.
+  const remoteIds = new Set(remoteItems.map((item) => item.id));
+  const localOnlyItems = state.items.filter(
+    (item) => !remoteIds.has(item.id) && !state.deletedItemIds.includes(item.id)
+  );
+  state.items = [...remoteItems, ...localOnlyItems];
+
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
   debugStatus.taskLoadCount = data?.length || 0;
@@ -1195,7 +1205,7 @@ async function handleAddItem(event) {
     // results that don't yet include the new item, causing it to disappear.
     window.setTimeout(() => {
       void refreshTasksFromSupabase({ renderAfter: true });
-    }, 800);
+    }, 2000);
   } catch (error) {
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span pending";
