@@ -1260,6 +1260,24 @@ function parseTaskDescription(value) {
   }
 }
 
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(`${label} timed out`));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function getAuthenticatedSupabaseUser() {
   if (!supabaseClient) {
     return null;
@@ -1271,7 +1289,11 @@ async function getAuthenticatedSupabaseUser() {
     return restoredSession.user;
   }
 
-  const { data, error } = await supabaseClient.auth.getUser();
+  const { data, error } = await withTimeout(
+    supabaseClient.auth.getUser(),
+    4000,
+    "Supabase auth lookup"
+  );
   if (data?.user) {
     debugStatus.latestSupabaseError = "None";
     return data.user;
@@ -1282,7 +1304,11 @@ async function getAuthenticatedSupabaseUser() {
     debugStatus.latestSupabaseError = error.message;
   }
 
-  const secondAttempt = await supabaseClient.auth.getUser();
+  const secondAttempt = await withTimeout(
+    supabaseClient.auth.getUser(),
+    4000,
+    "Supabase auth retry"
+  );
   if (secondAttempt.error) {
     console.error("Auth user lookup retry error:", secondAttempt.error);
     debugStatus.latestSupabaseError = secondAttempt.error.message;
@@ -3640,10 +3666,14 @@ async function restoreSupabaseSessionFromCache() {
 
   isRestoringSupabaseSession = true;
   try {
-    const restored = await supabaseClient.auth.setSession({
-      access_token: cachedSession.access_token,
-      refresh_token: cachedSession.refresh_token
-    });
+    const restored = await withTimeout(
+      supabaseClient.auth.setSession({
+        access_token: cachedSession.access_token,
+        refresh_token: cachedSession.refresh_token
+      }),
+      4000,
+      "Supabase session restore"
+    );
 
     if (restored.error || !restored.data?.session) {
       if (restored.error) {
@@ -3658,6 +3688,7 @@ async function restoreSupabaseSessionFromCache() {
     return restored.data.session;
   } catch (error) {
     console.error("Cached session restore exception:", error);
+    debugStatus.latestSupabaseError = error?.message || "Supabase session restore failed";
     return null;
   } finally {
     isRestoringSupabaseSession = false;
