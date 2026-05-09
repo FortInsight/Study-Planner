@@ -186,6 +186,13 @@ function getItemTimestamp(item) {
   return new Date(item?.updatedAt || item?.createdAt || 0).getTime();
 }
 
+function shouldPreserveRunningTimerSelection() {
+  return Boolean(
+    timer?.selectedItemId
+    && (timer.running || timer.pausedSecondsLeft !== null)
+  );
+}
+
 function loadState() {
   const storageKey = getPlannerStorageKey();
   try {
@@ -924,13 +931,15 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   }
 
   const remoteItems = dedupeTaskRows(data || []);
-  state.items = isHostedApp
-    ? remoteItems
-    : mergePlannerItems(
-        remoteItems.filter((item) => !state.deletedItemIds.includes(item.id)),
-        state.items,
-        state.deletedItemIds
-      );
+  if (isHostedApp) {
+    state.items = mergePlannerItems(remoteItems, state.items, []);
+  } else {
+    state.items = mergePlannerItems(
+      remoteItems.filter((item) => !state.deletedItemIds.includes(item.id)),
+      state.items,
+      state.deletedItemIds
+    );
+  }
   reconcileTimerStateWithItems();
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
@@ -967,7 +976,11 @@ async function refreshTasksFromSupabase(options = {}) {
       return;
     }
 
-    if (previousSelectedItemId && !state.items.some((item) => item.id === previousSelectedItemId)) {
+    if (
+      previousSelectedItemId
+      && !state.items.some((item) => item.id === previousSelectedItemId)
+      && !shouldPreserveRunningTimerSelection()
+    ) {
       timer.selectedItemId = state.items[0]?.id || "";
       saveTimerSession();
     }
@@ -1448,9 +1461,6 @@ async function handleAddItem(event) {
         timer.selectedItemId = savedItem.id;
       }
       render();
-      window.setTimeout(() => {
-        void refreshTasksFromSupabase({ renderAfter: true });
-      }, 1000);
       return;
     } catch (error) {
       state.items = previousItems;
@@ -2906,6 +2916,8 @@ function renderTimerCourseOptions() {
 
   if (state.items.some((item) => item.id === currentValue)) {
     timerCourseSelect.value = currentValue;
+  } else if (shouldPreserveRunningTimerSelection()) {
+    timerCourseSelect.value = "";
   } else {
     const fallbackItem = state.items[0];
     timerCourseSelect.value = fallbackItem?.id ?? "";
@@ -2925,6 +2937,11 @@ function reconcileTimerStateWithItems() {
     if (timerCourseSelect.value !== timer.selectedItemId) {
       timerCourseSelect.value = timer.selectedItemId;
     }
+    return;
+  }
+
+  if (shouldPreserveRunningTimerSelection()) {
+    timerCourseSelect.value = "";
     return;
   }
 
