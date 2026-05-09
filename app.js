@@ -5,6 +5,8 @@ const SUPABASE_SESSION_STORAGE_KEY = "study-planner-supabase-session-v1";
 const CUSTOM_ALERT_SRC = "custom-alert.wav";
 const supabaseConfig = window.SUPABASE_CONFIG || {};
 const supabaseClient = createSupabaseClient();
+const isLocalFileApp = window.location.protocol === "file:";
+const isHostedApp = window.location.protocol === "https:" || window.location.protocol === "http:";
 
 const defaultState = {
   items: [],
@@ -488,7 +490,7 @@ async function initializeAuth() {
   isInitializingAuth = true;
   const cachedSession = loadSupabaseSession();
   const hasCachedUser = Boolean(cachedSession?.user?.email);
-  const rememberedUser = authState.rememberedUser;
+  const rememberedUser = isLocalFileApp ? authState.rememberedUser : null;
   try {
     if (cachedSession?.user?.email) {
       await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
@@ -561,7 +563,7 @@ async function initializeAuth() {
       return;
     }
 
-    if (!isManualSignOut && authState.rememberedUser?.email) {
+    if (isLocalFileApp && !isManualSignOut && authState.rememberedUser?.email) {
       if (!hasActiveSession || !currentSessionUser?.id) {
         await applySignedInUser(authState.rememberedUser.email, authState.rememberedUser, { silent: true });
       }
@@ -3321,7 +3323,7 @@ function getStudyLabel(item) {
 }
 
 function getCurrentUser() {
-  return authState?.currentUser || authState?.rememberedUser?.email || "";
+  return authState?.currentUser || (isLocalFileApp ? authState?.rememberedUser?.email : "") || "";
 }
 
 function getPlannerStorageKey() {
@@ -3330,17 +3332,22 @@ function getPlannerStorageKey() {
 }
 
 function registerServiceWorker() {
-  const canRegister = "serviceWorker" in navigator
-    && (window.location.protocol === "https:" || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-
-  if (!canRegister) {
+  if (!("serviceWorker" in navigator)) {
     return;
   }
 
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./service-worker.js").catch(() => {
-      return null;
-    });
+    navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(
+      registrations.map((registration) => registration.unregister())
+    )).catch(() => null);
+
+    if ("caches" in window) {
+      caches.keys().then((keys) => Promise.all(
+        keys
+          .filter((key) => key.startsWith("study-planner-pwa-"))
+          .map((key) => caches.delete(key))
+      )).catch(() => null);
+    }
   });
 }
 
