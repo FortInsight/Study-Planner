@@ -677,6 +677,10 @@ async function applySignedInUser(email, user = null, options = {}) {
   } : authState.rememberedUser;
   saveAuthState();
   state = loadState();
+  if (isHostedApp) {
+    state.items = [];
+    state.deletedItemIds = [];
+  }
   hasActiveSession = true;
   currentSessionUser = user || null;
   authPanelCollapsed = false;
@@ -766,7 +770,7 @@ function hydrateSharedPlannerStateFromUser(user) {
     return;
   }
 
-  if (Array.isArray(sharedState.items)) {
+  if (!isHostedApp && Array.isArray(sharedState.items)) {
     const sharedItems = sharedState.items.map((item) => normalizePlannerItem(item));
     state.items = mergePlannerItems(sharedItems, state.items, state.deletedItemIds);
   }
@@ -775,7 +779,7 @@ function hydrateSharedPlannerStateFromUser(user) {
     state.sessions = sharedState.sessions;
   }
 
-  if (Array.isArray(sharedState.deletedItemIds)) {
+  if (!isHostedApp && Array.isArray(sharedState.deletedItemIds)) {
     // Merge remote deletedItemIds with local ones — never replace, so a
     // locally-deleted item can't be resurrected by stale remote metadata.
     const merged = [...new Set([...state.deletedItemIds, ...sharedState.deletedItemIds])];
@@ -912,8 +916,14 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     return false;
   }
 
-  const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
-  state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
+  const remoteItems = dedupeTaskRows(data || []);
+  state.items = isHostedApp
+    ? remoteItems
+    : mergePlannerItems(
+        remoteItems.filter((item) => !state.deletedItemIds.includes(item.id)),
+        state.items,
+        state.deletedItemIds
+      );
   reconcileTimerStateWithItems();
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
@@ -1297,6 +1307,18 @@ async function withTimeout(promise, timeoutMs, label) {
 async function getAuthenticatedSupabaseUser() {
   if (!supabaseClient) {
     return null;
+  }
+
+  if (isHostedApp) {
+    const sessionResult = await withTimeout(
+      supabaseClient.auth.getSession(),
+      4000,
+      "Supabase session lookup"
+    );
+    if (sessionResult?.data?.session?.user) {
+      debugStatus.latestSupabaseError = "None";
+      return sessionResult.data.session.user;
+    }
   }
 
   const restoredSession = await restoreSupabaseSessionFromCache();
@@ -2983,8 +3005,8 @@ function getSharedTimerSessionSnapshot() {
 
 function buildSharedPlannerStateSnapshot() {
   return {
-    items: state.items.map((item) => normalizePlannerItem(item)),
-    deletedItemIds: state.deletedItemIds,
+    items: isHostedApp ? [] : state.items.map((item) => normalizePlannerItem(item)),
+    deletedItemIds: isHostedApp ? [] : state.deletedItemIds,
     sessions: state.sessions,
     timerSettings: state.timerSettings,
     timerSession: getSharedTimerSessionSnapshot()
