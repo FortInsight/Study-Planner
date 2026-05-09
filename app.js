@@ -766,6 +766,11 @@ function hydrateSharedPlannerStateFromUser(user) {
     return;
   }
 
+  if (Array.isArray(sharedState.items)) {
+    const sharedItems = sharedState.items.map((item) => normalizePlannerItem(item));
+    state.items = mergePlannerItems(sharedItems, state.items, state.deletedItemIds);
+  }
+
   if (Array.isArray(sharedState.sessions)) {
     state.sessions = sharedState.sessions;
   }
@@ -1205,6 +1210,40 @@ function normalizeOccurrenceProgressMap(value) {
       completed: Boolean(entry?.completed)
     }])
   );
+}
+
+function normalizePlannerItem(item) {
+  return {
+    ...item,
+    id: item?.id || makeId(),
+    remoteTaskId: item?.remoteTaskId || null,
+    course: item?.course || item?.title || "Study plan",
+    title: item?.title || "",
+    type: item?.type || "Study",
+    plannedHours: Number(item?.plannedHours) || 0,
+    plannedPages: Number(item?.plannedPages) || 0,
+    plannedUnits: Number(item?.plannedUnits) || 0,
+    contentUnitType: normalizeContentUnitType(item?.contentUnitType),
+    customContentLabel: item?.customContentLabel || "",
+    totalContentTarget: Number(item?.totalContentTarget) || 0,
+    weekdayContentTarget: Number(item?.weekdayContentTarget) || 0,
+    weekendContentTarget: Number(item?.weekendContentTarget) || 0,
+    bookPages: Number(item?.bookPages) || 0,
+    dueDate: item?.dueDate || formatDateInputValue(new Date()),
+    repeat: item?.repeat || null,
+    pomodoro: normalizePomodoroSettings(item?.pomodoro),
+    actualHours: Number(item?.actualHours) || 0,
+    actualContent: Number(item?.actualContent ?? item?.actualPages ?? item?.actualUnits) || 0,
+    actualPages: Number(item?.actualPages) || 0,
+    actualUnits: Number(item?.actualUnits) || 0,
+    contentStart: item?.contentStart || "",
+    contentStop: item?.contentStop || "",
+    occurrenceProgress: normalizeOccurrenceProgressMap(item?.occurrenceProgress),
+    progress: Number(item?.progress) || 0,
+    completed: Boolean(item?.completed),
+    updatedAt: item?.updatedAt || new Date().toISOString(),
+    createdAt: item?.createdAt || new Date().toISOString()
+  };
 }
 
 function parseTaskDescription(value) {
@@ -2880,6 +2919,7 @@ function getSharedTimerSessionSnapshot() {
 
 function buildSharedPlannerStateSnapshot() {
   return {
+    items: state.items.map((item) => normalizePlannerItem(item)),
     deletedItemIds: state.deletedItemIds,
     sessions: state.sessions,
     timerSettings: state.timerSettings,
