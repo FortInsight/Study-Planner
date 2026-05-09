@@ -2070,7 +2070,7 @@ function renderItems() {
       const trackedAmount = calculateTrackedAmount(contentStart, contentStop);
       let updatedItem = null;
       const previousItems = state.items.map((entry) => ({ ...entry }));
-      state.items = state.items.map((entry) => (
+      const nextItems = state.items.map((entry) => (
         entry.id === item.id
           ? (updatedItem = buildUpdatedProgressItem(entry, {
             contentStart,
@@ -2079,31 +2079,53 @@ function renderItems() {
           }, occurrenceDate))
           : entry
       ));
-      saveFeedbackByItemId[saveFeedbackKey] = {
-        tone: "saved",
-        text: "Saved locally. Syncing..."
-      };
-      saveState();
-      render();
+
+      if (isHostedApp) {
+        saveFeedbackByItemId[saveFeedbackKey] = {
+          tone: "pending",
+          text: "Saving progress..."
+        };
+        render();
+      } else {
+        state.items = nextItems;
+        saveFeedbackByItemId[saveFeedbackKey] = {
+          tone: "saved",
+          text: "Saved locally. Syncing..."
+        };
+        saveState();
+        render();
+      }
 
       try {
         updatedItem = await saveTaskToSupabase(updatedItem || item);
-        state.items = state.items.map((entry) => entry.id === item.id ? updatedItem : entry);
+        if (isHostedApp) {
+          await refreshTasksFromSupabase({ renderAfter: false });
+          const remoteMatchedItem = state.items.find((entry) =>
+            entry.id === item.id
+            || entry.id === updatedItem?.id
+            || (updatedItem?.remoteTaskId && entry.remoteTaskId === updatedItem.remoteTaskId)
+          );
+          if (!remoteMatchedItem) {
+            throw new Error("Cloud save did not persist yet. Please refresh and try again.");
+          }
+        } else {
+          state.items = state.items.map((entry) => entry.id === item.id ? updatedItem : entry);
+        }
         saveFeedbackByItemId[saveFeedbackKey] = {
           tone: "saved",
           text: `Saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
         };
         saveState();
         render();
-        // Delay refresh so Supabase updated_at has time to settle before re-fetch;
-        // without this the stale row can win the dedupeTaskRows comparison.
-        window.setTimeout(() => {
-          void refreshTasksFromSupabase({ renderAfter: false });
-        }, 3000);
-      } catch (error) {
-        if (isHostedApp) {
-          state.items = previousItems;
+        if (!isHostedApp) {
+          // Delay refresh so Supabase updated_at has time to settle before re-fetch;
+          // without this the stale row can win the dedupeTaskRows comparison.
+          window.setTimeout(() => {
+            void refreshTasksFromSupabase({ renderAfter: false });
+          }, 3000);
         }
+      } catch (error) {
+        state.items = previousItems;
         saveFeedbackByItemId[saveFeedbackKey] = {
           tone: "pending",
           text: error?.message || "Cloud save failed. Please sign in again and retry."
