@@ -874,7 +874,8 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     return false;
   }
 
-  const activeUser = user || await getAuthenticatedSupabaseUser();
+  const authenticatedUser = await getAuthenticatedSupabaseUser();
+  const activeUser = authenticatedUser || user;
   if (!activeUser?.id) {
     return false;
   }
@@ -897,6 +898,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
   state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
+  reconcileTimerStateWithItems();
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
@@ -1298,6 +1300,7 @@ async function handleAddItem(event) {
         state.items.unshift(savedItem);
       }
       saveState();
+      void syncSharedPlannerStateToSupabase();
       resetPlannerForm();
       if (plannerSaveStatus) {
         plannerSaveStatus.className = "save-status full-span saved";
@@ -1360,6 +1363,7 @@ async function handleAddItem(event) {
     });
     state.items = state.items.map((entry) => entry.id === item.id ? savedItem : entry);
     saveState();
+    void syncSharedPlannerStateToSupabase();
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span saved";
       plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
@@ -2733,6 +2737,34 @@ function renderTimerCourseOptions() {
     timerCourseSelect.value = fallbackItem?.id ?? "";
     timer.selectedItemId = fallbackItem?.id ?? "";
   }
+
+  reconcileTimerStateWithItems();
+}
+
+function reconcileTimerStateWithItems() {
+  const hasSelectedItem = Boolean(
+    timer.selectedItemId
+    && state.items.some((item) => item.id === timer.selectedItemId)
+  );
+
+  if (hasSelectedItem) {
+    if (timerCourseSelect.value !== timer.selectedItemId) {
+      timerCourseSelect.value = timer.selectedItemId;
+    }
+    return;
+  }
+
+  const fallbackItem = state.items[0] || null;
+  timer.running = false;
+  window.clearInterval(timer.intervalId);
+  timer.intervalId = null;
+  timer.mode = "focus";
+  timer.selectedItemId = fallbackItem?.id || "";
+  timerCourseSelect.value = fallbackItem?.id || "";
+  timer.pausedSecondsLeft = null;
+  timer.stageEndsAt = null;
+  timer.secondsLeft = getActiveTimerSettings().focusMinutes * 60;
+  saveTimerSession();
 }
 
 function getTimerStageLabel(stateKey) {
