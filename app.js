@@ -498,15 +498,15 @@ async function initializeAuth() {
         await applySignedInUser(cachedUser.email, cachedUser, { silent: true });
       }
 
-      const sessionResult = await supabaseClient.auth.getSession();
-      let session = sessionResult.data?.session || null;
-
-      if (sessionResult.error) {
-        authMessage.textContent = sessionResult.error.message;
-      }
+      let session = await restoreSupabaseSessionFromCache();
+      let sessionResult = null;
 
       if (!session?.user?.email) {
-        session = await restoreSupabaseSessionFromCache();
+        sessionResult = await supabaseClient.auth.getSession();
+        session = sessionResult.data?.session || null;
+        if (sessionResult.error) {
+          authMessage.textContent = sessionResult.error.message;
+        }
       }
 
       if (session?.user?.email) {
@@ -3599,11 +3599,9 @@ function createSupabaseClient() {
 
   return supabaseFactory(url, anonKey, {
     auth: {
-      persistSession: true,
+      persistSession: false,
       autoRefreshToken: true,
-      detectSessionInUrl: true,
-      storageKey: "study-planner-supabase-auth-v1",
-      storage: window.localStorage
+      detectSessionInUrl: true
     }
   });
 }
