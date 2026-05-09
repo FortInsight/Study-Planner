@@ -882,6 +882,9 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   const authenticatedUser = await getAuthenticatedSupabaseUser();
   const activeUser = authenticatedUser || user;
   if (!activeUser?.id) {
+    if (!options.silent) {
+      authMessage.textContent = "Session expired. Please log in again to resume cloud sync.";
+    }
     return false;
   }
 
@@ -979,6 +982,7 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
 
   const activeUser = user || await getAuthenticatedSupabaseUser();
   if (!activeUser?.id) {
+    authMessage.textContent = "Session expired. Please log in again to resume cloud sync.";
     throw new Error("Plan saved on this device. Cloud sync will resume after you sign in again.");
   }
 
@@ -1046,6 +1050,7 @@ async function deleteTaskFromSupabase(item, user = null) {
 
   const activeUser = user || await getAuthenticatedSupabaseUser();
   if (!activeUser?.id) {
+    authMessage.textContent = "Session expired. Please log in again to resume cloud sync.";
     return false;
   }
 
@@ -1261,13 +1266,29 @@ async function getAuthenticatedSupabaseUser() {
   }
 
   const { data, error } = await supabaseClient.auth.getUser();
+  if (data?.user) {
+    return data.user;
+  }
+
   if (error) {
     console.error("Auth user lookup error:", error);
     debugStatus.latestSupabaseError = error.message;
+  }
+
+  const restoredSession = await restoreSupabaseSessionFromCache();
+  if (restoredSession?.user) {
+    debugStatus.latestSupabaseError = "None";
+    return restoredSession.user;
+  }
+
+  const secondAttempt = await supabaseClient.auth.getUser();
+  if (secondAttempt.error) {
+    console.error("Auth user lookup retry error:", secondAttempt.error);
+    debugStatus.latestSupabaseError = secondAttempt.error.message;
     return null;
   }
 
-  return data.user || null;
+  return secondAttempt.data?.user || null;
 }
 
 async function handleAddItem(event) {
