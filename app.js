@@ -491,7 +491,8 @@ async function initializeAuth() {
   if (isHostedApp) {
     isInitializingAuth = true;
     const cachedSession = loadSupabaseSession();
-    const cachedUser = cachedSession?.user?.email ? cachedSession.user : null;
+    const rememberedUser = authState.rememberedUser?.email ? authState.rememberedUser : null;
+    const cachedUser = cachedSession?.user?.email ? cachedSession.user : rememberedUser;
     try {
       if (cachedUser?.email) {
         await applySignedInUser(cachedUser.email, cachedUser, { silent: true });
@@ -548,7 +549,7 @@ async function initializeAuth() {
       }
 
       clearSupabaseSession();
-      applySignedOutUser({ silent: true, preserveRememberedUser: false });
+      applySignedOutUser({ silent: true, preserveRememberedUser: !isManualSignOut });
       render();
     });
 
@@ -676,9 +677,6 @@ async function applySignedInUser(email, user = null, options = {}) {
   } : authState.rememberedUser;
   saveAuthState();
   state = loadState();
-  if (isHostedApp) {
-    state.items = [];
-  }
   hasActiveSession = true;
   currentSessionUser = user || null;
   authPanelCollapsed = false;
@@ -3531,7 +3529,9 @@ function createSupabaseClient() {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
-      detectSessionInUrl: true
+      detectSessionInUrl: true,
+      storageKey: "study-planner-supabase-auth-v1",
+      storage: window.localStorage
     }
   });
 }
