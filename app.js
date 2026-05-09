@@ -2680,7 +2680,6 @@ function ensureTimerInterval() {
     syncTimerClock();
     if (!timer.running) return;
     renderTimer();
-    renderHeroMetrics();
     renderReports();
   }, 1000);
 }
