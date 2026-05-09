@@ -1265,20 +1265,21 @@ async function getAuthenticatedSupabaseUser() {
     return null;
   }
 
+  const restoredSession = await restoreSupabaseSessionFromCache();
+  if (restoredSession?.user) {
+    debugStatus.latestSupabaseError = "None";
+    return restoredSession.user;
+  }
+
   const { data, error } = await supabaseClient.auth.getUser();
   if (data?.user) {
+    debugStatus.latestSupabaseError = "None";
     return data.user;
   }
 
   if (error) {
     console.error("Auth user lookup error:", error);
     debugStatus.latestSupabaseError = error.message;
-  }
-
-  const restoredSession = await restoreSupabaseSessionFromCache();
-  if (restoredSession?.user) {
-    debugStatus.latestSupabaseError = "None";
-    return restoredSession.user;
   }
 
   const secondAttempt = await supabaseClient.auth.getUser();
@@ -3645,12 +3646,18 @@ async function restoreSupabaseSessionFromCache() {
     });
 
     if (restored.error || !restored.data?.session) {
+      if (restored.error) {
+        console.error("Cached session restore error:", restored.error);
+        debugStatus.latestSupabaseError = restored.error.message;
+      }
       return null;
     }
 
     saveSupabaseSession(restored.data.session);
+    debugStatus.latestSupabaseError = "None";
     return restored.data.session;
   } catch (error) {
+    console.error("Cached session restore exception:", error);
     return null;
   } finally {
     isRestoringSupabaseSession = false;
