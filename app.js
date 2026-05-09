@@ -487,6 +487,50 @@ async function initializeAuth() {
     return;
   }
 
+  if (isHostedApp) {
+    isInitializingAuth = true;
+    try {
+      const sessionResult = await supabaseClient.auth.getSession();
+      const session = sessionResult.data?.session || null;
+
+      if (sessionResult.error) {
+        authMessage.textContent = sessionResult.error.message;
+      }
+
+      if (session?.user?.email) {
+        saveSupabaseSession(session);
+        await ensureSupabaseProfile(session.user);
+        await applySignedInUser(session.user.email, session.user, { silent: true });
+      } else {
+        clearSupabaseSession();
+        applySignedOutUser({ silent: true, preserveRememberedUser: false });
+      }
+    } catch (error) {
+      clearSupabaseSession();
+      applySignedOutUser({ silent: true, preserveRememberedUser: false });
+      authMessage.textContent = "We could not initialize Supabase sign in right now.";
+    } finally {
+      isInitializingAuth = false;
+    }
+
+    supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+      if (session?.user?.email) {
+        saveSupabaseSession(session);
+        await ensureSupabaseProfile(session.user);
+        await applySignedInUser(session.user.email, session.user, { silent: true });
+        render();
+        return;
+      }
+
+      clearSupabaseSession();
+      applySignedOutUser({ silent: true, preserveRememberedUser: false });
+      render();
+    });
+
+    render();
+    return;
+  }
+
   isInitializingAuth = true;
   const cachedSession = loadSupabaseSession();
   const hasCachedUser = Boolean(cachedSession?.user?.email);
@@ -1166,6 +1210,8 @@ async function handleAddItem(event) {
   const data = new FormData(form);
   const editingItemId = editingItemIdInput.value;
   const existingItem = state.items.find((item) => item.id === editingItemId);
+  const previousItems = state.items.map((item) => ({ ...item }));
+  const previousDeletedIds = [...state.deletedItemIds];
   const contentUnitType = normalizeContentUnitType(String(data.get("contentUnitType") || ""));
   const customContentLabel = String(data.get("customContentLabel") || "").trim();
   const totalContentTarget = Number(data.get("totalContentTarget")) || 0;
@@ -1255,9 +1301,14 @@ async function handleAddItem(event) {
       void refreshTasksFromSupabase({ renderAfter: true });
     }, 2000);
   } catch (error) {
+    if (isHostedApp) {
+      state.items = previousItems;
+      state.deletedItemIds = previousDeletedIds;
+      saveState();
+    }
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span pending";
-      plannerSaveStatus.textContent = error?.message || `${existingItem ? "Plan updated" : "Plan saved"} on this device. Cloud sync is pending.`;
+      plannerSaveStatus.textContent = error?.message || "Cloud save failed. Please sign in again and retry.";
     }
     render();
   }
@@ -1815,6 +1866,7 @@ function renderItems() {
       const contentStop = Number(contentStopInput.value) || 0;
       const trackedAmount = calculateTrackedAmount(contentStart, contentStop);
       let updatedItem = null;
+      const previousItems = state.items.map((entry) => ({ ...entry }));
       state.items = state.items.map((entry) => (
         entry.id === item.id
           ? (updatedItem = buildUpdatedProgressItem(entry, {
@@ -1846,9 +1898,12 @@ function renderItems() {
           void refreshTasksFromSupabase({ renderAfter: false });
         }, 3000);
       } catch (error) {
+        if (isHostedApp) {
+          state.items = previousItems;
+        }
         saveFeedbackByItemId[saveFeedbackKey] = {
           tone: "pending",
-          text: error?.message || "Cloud sync is still pending."
+          text: error?.message || "Cloud save failed. Please sign in again and retry."
         };
         saveState();
         render();
