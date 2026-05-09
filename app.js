@@ -597,6 +597,9 @@ async function applySignedInUser(email, user = null, options = {}) {
   } : authState.rememberedUser;
   saveAuthState();
   state = loadState();
+  if (isHostedApp) {
+    state.items = [];
+  }
   hasActiveSession = true;
   currentSessionUser = user || null;
   authPanelCollapsed = false;
@@ -823,7 +826,9 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   }
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
-  state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
+  state.items = isHostedApp
+    ? remoteItems
+    : mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
