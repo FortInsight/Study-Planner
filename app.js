@@ -853,33 +853,40 @@ async function syncSharedPlannerStateToSupabase() {
 
 async function ensureSupabaseProfile(user) {
   if (!supabaseClient || !user?.id) {
-    return;
+    return false;
   }
 
-  const payload = {
-    id: user.id,
-    email: user.email || "",
-    updated_at: new Date().toISOString()
-  };
+  try {
+    const payload = {
+      id: user.id,
+      email: user.email || "",
+      updated_at: new Date().toISOString()
+    };
 
-  const { data: profileData, error: profileError } = await withTimeout(
-    supabaseClient
-      .from("profiles")
-      .upsert(payload, {
-        onConflict: "id"
-      })
-      .select(),
-    5000,
-    "Supabase profile upsert"
-  );
+    const { data: profileData, error: profileError } = await withTimeout(
+      supabaseClient
+        .from("profiles")
+        .upsert(payload, {
+          onConflict: "id"
+        })
+        .select(),
+      5000,
+      "Supabase profile upsert"
+    );
 
-  if (profileError) {
-    console.error("Profile upsert error:", profileError);
-    debugStatus.latestSupabaseError = profileError.message;
-    return;
+    if (profileError) {
+      console.warn("Profile upsert warning:", profileError);
+      debugStatus.latestSupabaseError = profileError.message;
+      return false;
+    }
+
+    console.log("Profile saved:", profileData);
+    return true;
+  } catch (error) {
+    console.warn("Profile upsert timeout/warning:", error);
+    debugStatus.latestSupabaseError = error?.message || "Supabase profile upsert failed";
+    return false;
   }
-
-  console.log("Profile saved:", profileData);
 }
 
 async function loadTasksFromSupabase(user = null, options = {}) {
