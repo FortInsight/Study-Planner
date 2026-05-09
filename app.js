@@ -858,12 +858,16 @@ async function ensureSupabaseProfile(user) {
     updated_at: new Date().toISOString()
   };
 
-  const { data: profileData, error: profileError } = await supabaseClient
-    .from("profiles")
-    .upsert(payload, {
-      onConflict: "id"
-    })
-    .select();
+  const { data: profileData, error: profileError } = await withTimeout(
+    supabaseClient
+      .from("profiles")
+      .upsert(payload, {
+        onConflict: "id"
+      })
+      .select(),
+    5000,
+    "Supabase profile upsert"
+  );
 
   if (profileError) {
     console.error("Profile upsert error:", profileError);
@@ -888,10 +892,14 @@ async function loadTasksFromSupabase(user = null, options = {}) {
     return false;
   }
 
-  const { data, error } = await supabaseClient
-    .from("tasks")
-    .select("*")
-    .eq("user_id", activeUser.id);
+  const { data, error } = await withTimeout(
+    supabaseClient
+      .from("tasks")
+      .select("*")
+      .eq("user_id", activeUser.id),
+    5000,
+    "Supabase task load"
+  );
 
   if (error) {
     debugStatus.userEmail = activeUser.email || getCurrentUser();
@@ -1011,7 +1019,7 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
       .insert(payload)
       .select();
 
-  const { data, error } = await query;
+  const { data, error } = await withTimeout(query, 5000, "Supabase task save");
 
   if (error) {
     debugStatus.userEmail = activeUser.email || getCurrentUser();
@@ -1028,11 +1036,15 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
   // deserializeTaskRecord can always recover the local id on next load.
   if (!remoteTaskId && savedRow?.id) {
     const itemWithRemote = { ...item, remoteTaskId: savedRow.id };
-    await supabaseClient
-      .from("tasks")
-      .update({ description: serializeTaskDescription(itemWithRemote) })
-      .eq("id", savedRow.id)
-      .eq("user_id", activeUser.id);
+    await withTimeout(
+      supabaseClient
+        .from("tasks")
+        .update({ description: serializeTaskDescription(itemWithRemote) })
+        .eq("id", savedRow.id)
+        .eq("user_id", activeUser.id),
+      5000,
+      "Supabase task post-save update"
+    );
   }
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
@@ -1065,11 +1077,15 @@ async function deleteTaskFromSupabase(item, user = null) {
     return true;
   }
 
-  const { error } = await supabaseClient
-    .from("tasks")
-    .delete()
-    .in("id", uniqueRemoteTaskIds)
-    .eq("user_id", activeUser.id);
+  const { error } = await withTimeout(
+    supabaseClient
+      .from("tasks")
+      .delete()
+      .in("id", uniqueRemoteTaskIds)
+      .eq("user_id", activeUser.id),
+    5000,
+    "Supabase task delete"
+  );
 
   if (error) {
     debugStatus.userEmail = activeUser.email || getCurrentUser();
