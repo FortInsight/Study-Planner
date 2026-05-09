@@ -847,6 +847,18 @@ async function refreshTasksFromSupabase(options = {}) {
   taskRefreshInFlight = true;
   try {
     const previousSelectedItemId = timer.selectedItemId;
+    const freshUser = await getAuthenticatedSupabaseUser();
+    if (freshUser?.id) {
+      currentSessionUser = freshUser;
+      authState.rememberedUser = {
+        email: freshUser.email || authState.rememberedUser?.email || "",
+        id: freshUser.id || "",
+        user_metadata: freshUser.user_metadata || {}
+      };
+      saveAuthState();
+      profileDisplayName = getDisplayNameFromUser(freshUser);
+      hydrateSharedPlannerStateFromUser(freshUser);
+    }
     const refreshed = await loadTasksFromSupabase(currentSessionUser, { silent: true });
 
     if (!refreshed) {
@@ -3216,7 +3228,8 @@ function applyCompletedPomodoroToItem(item, focusMinutes, occurrenceDate = new D
     ...updatedItem,
     actualHours: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.actualHours) || 0 : actualHours,
     progress: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : progress,
-    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed
+    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed,
+    updatedAt: new Date().toISOString()
   };
 }
 
