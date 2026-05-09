@@ -2556,7 +2556,7 @@ function renderAchievementMeasure() {
   }
 
   const totalPlannedHours = sum(filteredEntries, ({ item }) => getTimeTargetHours(item));
-  const totalAchievedHours = sum(filteredEntries, ({ item, occurrenceDate }) => getDisplayedActualHours(item, occurrenceDate));
+  const totalAchievedHours = sum(filteredEntries, ({ item, occurrenceDate }) => getEffectiveAchievedHours(item, occurrenceDate));
   const achievedPercent = totalPlannedHours > 0
     ? Math.min(100, Math.round((totalAchievedHours / totalPlannedHours) * 100))
     : 0;
@@ -3113,7 +3113,7 @@ function getAchievedMinutesForDate(date) {
       return totalMinutes;
     }
 
-    const hours = getDisplayedActualHours(item, dateKey);
+    const hours = getEffectiveAchievedHours(item, dateKey);
     return totalMinutes + (hours * 60);
   }, 0).toFixed(2));
 }
@@ -3161,6 +3161,21 @@ function getLiveFocusHoursForItem(itemId, occurrenceDate = null) {
 function getDisplayedActualHours(item, occurrenceDate = null) {
   const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
   return Number((occurrenceEntry.actualHours + getLiveFocusHoursForItem(item.id, occurrenceDate)).toFixed(2));
+}
+
+function getEffectiveAchievedHours(item, occurrenceDate = null) {
+  const actualHours = getDisplayedActualHours(item, occurrenceDate);
+  if (actualHours > 0) {
+    return actualHours;
+  }
+
+  const targetHours = getTimeTargetHours(item);
+  const contentPercent = getContentProgressState(item, occurrenceDate).percent || 0;
+  if (targetHours > 0 && contentPercent > 0) {
+    return Number(((targetHours * contentPercent) / 100).toFixed(2));
+  }
+
+  return 0;
 }
 
 function getTimeTargetHours(item) {
