@@ -2386,6 +2386,25 @@ function mergeOccurrenceProgressEntry(item, occurrenceDate, entry) {
   };
 }
 
+function mirrorOccurrenceEntryToItem(item, occurrenceDate = null) {
+  if (!usesOccurrenceProgress(item)) {
+    return item;
+  }
+
+  const occurrenceEntry = getOccurrenceProgressEntry(item, occurrenceDate);
+  return {
+    ...item,
+    actualHours: occurrenceEntry.actualHours,
+    actualContent: occurrenceEntry.actualContent,
+    actualPages: occurrenceEntry.actualPages,
+    actualUnits: occurrenceEntry.actualUnits,
+    contentStart: occurrenceEntry.contentStart,
+    contentStop: occurrenceEntry.contentStop,
+    progress: occurrenceEntry.progress,
+    completed: occurrenceEntry.completed
+  };
+}
+
 function getContentProgressState(item, occurrenceDate = null) {
   const tracking = getContentTrackingConfig(item);
   const total = tracking.total || 0;
@@ -2435,6 +2454,7 @@ function buildUpdatedProgressItem(item, progressInput, occurrenceDate = null) {
     progress: occurrenceProgress,
     completed: occurrenceCompleted
   });
+  updatedItem = mirrorOccurrenceEntryToItem(updatedItem, occurrenceDate);
   updatedItem.progress = usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : occurrenceProgress;
   updatedItem.completed = usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : occurrenceCompleted;
   updatedItem.updatedAt = new Date().toISOString();
@@ -3582,6 +3602,7 @@ function applyCompletedPomodoroToItem(item, focusMinutes, occurrenceDate = new D
     progress,
     completed
   });
+  updatedItem = mirrorOccurrenceEntryToItem(updatedItem, occurrenceDate);
 
   return {
     ...updatedItem,
