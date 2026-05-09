@@ -817,19 +817,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   }
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
-
-  // Merge remote items with locally-saved items not yet reflected in Supabase.
-  // Match by both id AND remoteTaskId to handle the case where a freshly
-  // inserted row is returned from Supabase with a different key than local.
-  const remoteIds = new Set(remoteItems.map((item) => item.id));
-  const remoteTaskIds = new Set(remoteItems.map((item) => item.remoteTaskId).filter(Boolean));
-  const localOnlyItems = state.items.filter(
-    (item) =>
-      !remoteIds.has(item.id) &&
-      !(item.remoteTaskId && remoteTaskIds.has(item.remoteTaskId)) &&
-      !state.deletedItemIds.includes(item.id)
-  );
-  state.items = [...remoteItems, ...localOnlyItems];
+  state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
@@ -1028,6 +1016,34 @@ function dedupeTaskRows(taskRows) {
   return [...byPlannerId.values()].map((entry) => entry.deserialized);
 }
 
+function mergePlannerItems(remoteItems, localItems, deletedItemIds = []) {
+  const deletedSet = new Set(deletedItemIds);
+  const merged = new Map();
+
+  const considerItem = (item) => {
+    if (!item || deletedSet.has(item.id)) {
+      return;
+    }
+
+    const existing = merged.get(item.id);
+    if (!existing) {
+      merged.set(item.id, item);
+      return;
+    }
+
+    const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+    const nextTime = new Date(item.updatedAt || item.createdAt || 0).getTime();
+    if (nextTime >= existingTime) {
+      merged.set(item.id, item);
+    }
+  };
+
+  remoteItems.forEach(considerItem);
+  localItems.forEach(considerItem);
+
+  return [...merged.values()];
+}
+
 async function findMatchingRemoteTaskRows(item, activeUser) {
   if (!supabaseClient || !activeUser?.id || !item?.id) {
     return [];
@@ -1083,7 +1099,8 @@ function deserializeTaskRecord(taskRow) {
     occurrenceProgress: normalizeOccurrenceProgressMap(stored.occurrenceProgress),
     progress: Number(stored.progress) || 0,
     completed: Boolean(stored.completed),
-    createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString()
+    createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString(),
+    updatedAt: stored.updatedAt || taskRow.updated_at || taskRow.created_at || new Date().toISOString()
   };
 }
 
@@ -1172,7 +1189,8 @@ async function handleAddItem(event) {
     occurrenceProgress: existingItem?.occurrenceProgress || {},
     progress: existingItem?.progress || 0,
     completed: existingItem?.completed || false,
-    createdAt: existingItem?.createdAt || new Date().toISOString()
+    createdAt: existingItem?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
 
   state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
@@ -2126,6 +2144,7 @@ function buildUpdatedProgressItem(item, progressInput, occurrenceDate = null) {
   });
   updatedItem.progress = usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : occurrenceProgress;
   updatedItem.completed = usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : occurrenceCompleted;
+  updatedItem.updatedAt = new Date().toISOString();
   return updatedItem;
 }
 
@@ -3216,7 +3235,8 @@ function applyCompletedPomodoroToItem(item, focusMinutes, occurrenceDate = new D
     ...updatedItem,
     actualHours: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.actualHours) || 0 : actualHours,
     progress: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : progress,
-    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed
+    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed,
+    updatedAt: new Date().toISOString()
   };
 }
 
