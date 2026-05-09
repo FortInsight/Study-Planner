@@ -179,6 +179,10 @@ function loadAuthState() {
   }
 }
 
+function getItemTimestamp(item) {
+  return new Date(item?.updatedAt || item?.createdAt || 0).getTime();
+}
+
 function loadState() {
   const storageKey = getPlannerStorageKey();
   try {
@@ -817,19 +821,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   }
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
-
-  // Merge remote items with locally-saved items not yet reflected in Supabase.
-  // Match by both id AND remoteTaskId to handle the case where a freshly
-  // inserted row is returned from Supabase with a different key than local.
-  const remoteIds = new Set(remoteItems.map((item) => item.id));
-  const remoteTaskIds = new Set(remoteItems.map((item) => item.remoteTaskId).filter(Boolean));
-  const localOnlyItems = state.items.filter(
-    (item) =>
-      !remoteIds.has(item.id) &&
-      !(item.remoteTaskId && remoteTaskIds.has(item.remoteTaskId)) &&
-      !state.deletedItemIds.includes(item.id)
-  );
-  state.items = [...remoteItems, ...localOnlyItems];
+  state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
@@ -1029,9 +1021,10 @@ function dedupeTaskRows(taskRows) {
       return;
     }
 
-    // Prefer updated_at over created_at so progress updates win over the original insert
-    const existingTime = new Date(existing.row.updated_at || existing.row.created_at || 0).getTime();
-    const nextTime = new Date(row.updated_at || row.created_at || 0).getTime();
+    const existingTime = getItemTimestamp(existing.deserialized)
+      || new Date(existing.row.updated_at || existing.row.created_at || 0).getTime();
+    const nextTime = getItemTimestamp(deserialized)
+      || new Date(row.updated_at || row.created_at || 0).getTime();
     if (nextTime >= existingTime) {
       byPlannerId.set(deserialized.id, { row, deserialized });
     }
@@ -1095,8 +1088,27 @@ function deserializeTaskRecord(taskRow) {
     occurrenceProgress: normalizeOccurrenceProgressMap(stored.occurrenceProgress),
     progress: Number(stored.progress) || 0,
     completed: Boolean(stored.completed),
+    updatedAt: stored.updatedAt || taskRow.updated_at || taskRow.created_at || new Date().toISOString(),
     createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString()
   };
+}
+
+function mergePlannerItems(remoteItems, localItems, deletedItemIds = []) {
+  const deletedIds = new Set(deletedItemIds || []);
+  const mergedById = new Map();
+
+  [...localItems, ...remoteItems].forEach((item) => {
+    if (!item?.id || deletedIds.has(item.id)) {
+      return;
+    }
+
+    const existing = mergedById.get(item.id);
+    if (!existing || getItemTimestamp(item) >= getItemTimestamp(existing)) {
+      mergedById.set(item.id, item);
+    }
+  });
+
+  return [...mergedById.values()];
 }
 
 function normalizeOccurrenceProgressMap(value) {
@@ -2138,6 +2150,7 @@ function buildUpdatedProgressItem(item, progressInput, occurrenceDate = null) {
   });
   updatedItem.progress = usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : occurrenceProgress;
   updatedItem.completed = usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : occurrenceCompleted;
+  updatedItem.updatedAt = new Date().toISOString();
   return updatedItem;
 }
 
@@ -2175,7 +2188,7 @@ function renderReports() {
   const yearlyMinutes = getDisplayMinutesForRange("year", reportAnchorDate);
   const completedItems = filteredEntries.filter(({ item, occurrenceDate }) => isStudyGoalAchieved(item, occurrenceDate)).length;
   const completionRate = filteredEntries.length ? Math.round((completedItems / filteredEntries.length) * 100) : 0;
-  const dailyTargetMinutes = getActiveTimerSettings().dailyTargetMinutes;
+  const dailyTargetMinutes = getDailyTargetMinutesForDate(reportAnchorDate);
   const todayAchievement = Math.min(100, Math.round((dailyMinutes / dailyTargetMinutes) * 100));
 
   const cards = [
@@ -2276,12 +2289,7 @@ function getTrendData(view) {
       hourDate.setHours(index * 3);
       const nextHour = new Date(hourDate);
       nextHour.setHours(hourDate.getHours() + 3);
-      const minutes = state.sessions
-        .filter((session) => {
-          const completedAt = new Date(session.completedAt);
-          return completedAt >= hourDate && completedAt < nextHour;
-        })
-        .reduce((total, session) => total + session.minutes, 0);
+      const minutes = getAchievedMinutesForDate(anchor);
       const percent = calculateAchievementPercent(minutes, getDailyTargetMinutesForDate(hourDate) || defaultState.timerSettings.dailyTargetMinutes);
       return {
         label: `${hourDate.toLocaleTimeString([], { hour: "numeric" })}`,
@@ -2305,12 +2313,7 @@ function getTrendData(view) {
       weekStart.setDate(monthStart.getDate() + (index * 7));
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekEnd.getDate() + 7);
-      const minutes = state.sessions
-        .filter((session) => {
-          const completedAt = new Date(session.completedAt);
-          return completedAt >= weekStart && completedAt < weekEnd;
-        })
-        .reduce((total, session) => total + session.minutes, 0);
+      const minutes = getAchievedMinutesForDateRange(weekStart, addDays(weekEnd, -1));
       const plannedMinutes = getPlannedMinutesForDateRange(weekStart, addDays(weekEnd, -1));
       const percent = calculateAchievementPercent(minutes, plannedMinutes);
       return {
@@ -2332,12 +2335,7 @@ function getTrendData(view) {
     const points = [...Array(12)].map((_, index) => {
       const monthDate = new Date(anchor.getFullYear(), index, 1);
       const nextMonth = new Date(anchor.getFullYear(), index + 1, 1);
-      const minutes = state.sessions
-        .filter((session) => {
-          const completedAt = new Date(session.completedAt);
-          return completedAt >= monthDate && completedAt < nextMonth;
-        })
-        .reduce((total, session) => total + session.minutes, 0);
+      const minutes = getAchievedMinutesForDateRange(monthDate, addDays(nextMonth, -1));
       const plannedMinutes = getPlannedMinutesForDateRange(monthDate, addDays(nextMonth, -1));
       const percent = calculateAchievementPercent(minutes, plannedMinutes);
       return {
@@ -2360,12 +2358,7 @@ function getTrendData(view) {
     weekStart.setDate(anchor.getDate() - 6);
     const date = addDays(weekStart, index);
     const label = date.toLocaleDateString([], { weekday: "short" });
-    let minutes = state.sessions
-      .filter((session) => isSameDay(new Date(session.completedAt), date))
-      .reduce((total, session) => total + session.minutes, 0);
-    if (isSameDay(date, startOfDay(new Date()))) {
-      minutes += getLiveFocusMinutes();
-    }
+    const minutes = getAchievedMinutesForDate(date);
     const percent = calculateAchievementPercent(minutes, getDailyTargetMinutesForDate(date));
     return {
       label,
@@ -2570,7 +2563,7 @@ function renderTimer() {
   updateTimerButtons();
   const reportAnchorDate = startOfDay(viewCursor);
   const liveDailyMinutes = getDisplayMinutesForRange("day", reportAnchorDate);
-  const dailyTargetMinutes = getActiveTimerSettings().dailyTargetMinutes;
+  const dailyTargetMinutes = getDailyTargetMinutesForDate(reportAnchorDate);
   const liveDailyPercent = Math.min(100, Math.round((liveDailyMinutes / dailyTargetMinutes) * 100));
   const progressLabel = getOccurrenceDateKey(reportAnchorDate) === getOccurrenceDateKey(new Date()) ? "Today's progress" : `${formatLongDate(reportAnchorDate)} progress`;
   const todayProgressLabel = document.querySelector(".today-target span");
@@ -2673,7 +2666,6 @@ function ensureTimerInterval() {
     syncTimerClock();
     if (!timer.running) return;
     renderTimer();
-    renderHeroMetrics();
     renderReports();
   }, 1000);
 }
@@ -2736,20 +2728,44 @@ function getRangeBounds(range, anchorDate = new Date()) {
 
 function getMinutesForRange(range, anchorDate = new Date()) {
   const { start, end } = getRangeBounds(range, anchorDate);
-  return state.sessions
-    .filter((session) => {
-      const completedAt = new Date(session.completedAt);
-      return completedAt >= start && completedAt < end;
-    })
-    .reduce((total, session) => total + session.minutes, 0);
+  return getAchievedMinutesForDateRange(start, addDays(end, -1));
 }
 
 function getDisplayMinutesForRange(range, anchorDate = new Date()) {
-  const { start, end } = getRangeBounds(range, anchorDate);
-  const liveMinutes = startOfDay(new Date()) >= start && startOfDay(new Date()) < end
-    ? getLiveFocusMinutes()
-    : 0;
-  return getMinutesForRange(range, anchorDate) + liveMinutes;
+  return getMinutesForRange(range, anchorDate);
+}
+
+function getAchievedMinutesForDate(date) {
+  const targetDate = startOfDay(date);
+  const dateKey = getOccurrenceDateKey(targetDate);
+
+  return Number(state.items.reduce((totalMinutes, item) => {
+    const dueDate = startOfDay(new Date(`${item.dueDate}T00:00:00`));
+    const repeat = normalizeRepeat(item.repeat);
+    const occursOnDate = repeat
+      ? matchesRecurringDate(dueDate, targetDate, repeat)
+      : isSameDay(dueDate, targetDate);
+
+    if (!occursOnDate) {
+      return totalMinutes;
+    }
+
+    const hours = getDisplayedActualHours(item, dateKey);
+    return totalMinutes + (hours * 60);
+  }, 0).toFixed(2));
+}
+
+function getAchievedMinutesForDateRange(startDate, endDate) {
+  let total = 0;
+  let cursor = startOfDay(startDate);
+  const safeEnd = startOfDay(endDate);
+
+  while (cursor <= safeEnd) {
+    total += getAchievedMinutesForDate(cursor);
+    cursor = addDays(cursor, 1);
+  }
+
+  return Number(total.toFixed(2));
 }
 
 function getLiveFocusMinutes() {
