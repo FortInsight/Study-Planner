@@ -112,7 +112,6 @@ let sharedStateSyncTimeout = null;
 let plannerStatusClearTimeout = null;
 let taskRefreshInFlight = false;
 let taskSyncIntervalId = null;
-let taskRealtimeChannel = null;
 let activePageHash = "#tasksSection";
 let topShellHidden = false;
 let hasActiveSession = false;
@@ -602,7 +601,6 @@ async function applySignedInUser(email, user = null, options = {}) {
   hydrateSharedPlannerStateFromUser(user);
   timer = createDefaultTimer();
   startTaskSyncLoop();
-  startTaskRealtimeSync(user);
   if (!options.silent) {
     render();
   }
@@ -619,7 +617,6 @@ function applySignedOutUser(options = {}) {
     sharedStateSyncTimeout = null;
   }
   stopTaskSyncLoop();
-  stopTaskRealtimeSync();
   const preservedUser = options.preserveRememberedUser ? authState.rememberedUser : null;
   authState.currentUser = preservedUser?.email || "";
   if (!options.preserveRememberedUser) {
@@ -820,7 +817,19 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   }
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
-  state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
+
+  // Merge remote items with locally-saved items not yet reflected in Supabase.
+  // Match by both id AND remoteTaskId to handle the case where a freshly
+  // inserted row is returned from Supabase with a different key than local.
+  const remoteIds = new Set(remoteItems.map((item) => item.id));
+  const remoteTaskIds = new Set(remoteItems.map((item) => item.remoteTaskId).filter(Boolean));
+  const localOnlyItems = state.items.filter(
+    (item) =>
+      !remoteIds.has(item.id) &&
+      !(item.remoteTaskId && remoteTaskIds.has(item.remoteTaskId)) &&
+      !state.deletedItemIds.includes(item.id)
+  );
+  state.items = [...remoteItems, ...localOnlyItems];
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
@@ -875,39 +884,6 @@ function stopTaskSyncLoop() {
 
   window.clearInterval(taskSyncIntervalId);
   taskSyncIntervalId = null;
-}
-
-function startTaskRealtimeSync(user) {
-  stopTaskRealtimeSync();
-  if (!supabaseClient || !user?.id || typeof supabaseClient.channel !== "function") {
-    return;
-  }
-
-  taskRealtimeChannel = supabaseClient
-    .channel(`tasks-${user.id}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "tasks",
-        filter: `user_id=eq.${user.id}`
-      },
-      () => {
-        void refreshTasksFromSupabase({ renderAfter: true });
-      }
-    )
-    .subscribe();
-}
-
-function stopTaskRealtimeSync() {
-  if (!taskRealtimeChannel || !supabaseClient?.removeChannel) {
-    taskRealtimeChannel = null;
-    return;
-  }
-
-  supabaseClient.removeChannel(taskRealtimeChannel);
-  taskRealtimeChannel = null;
 }
 
 async function saveTaskToSupabase(item, user = null, options = {}) {
@@ -1041,56 +1017,15 @@ function dedupeTaskRows(taskRows) {
       return;
     }
 
-    // Prefer the planner item's own updatedAt first, because duplicate remote
-    // rows may not have reliable database updated_at values.
-    const existingTime = new Date(
-      existing.deserialized.updatedAt
-      || existing.deserialized.createdAt
-      || existing.row.updated_at
-      || existing.row.created_at
-      || 0
-    ).getTime();
-    const nextTime = new Date(
-      deserialized.updatedAt
-      || deserialized.createdAt
-      || row.updated_at
-      || row.created_at
-      || 0
-    ).getTime();
+    // Prefer updated_at over created_at so progress updates win over the original insert
+    const existingTime = new Date(existing.row.updated_at || existing.row.created_at || 0).getTime();
+    const nextTime = new Date(row.updated_at || row.created_at || 0).getTime();
     if (nextTime >= existingTime) {
       byPlannerId.set(deserialized.id, { row, deserialized });
     }
   });
 
   return [...byPlannerId.values()].map((entry) => entry.deserialized);
-}
-
-function mergePlannerItems(remoteItems, localItems, deletedItemIds = []) {
-  const deletedSet = new Set(deletedItemIds);
-  const merged = new Map();
-
-  const considerItem = (item) => {
-    if (!item || deletedSet.has(item.id)) {
-      return;
-    }
-
-    const existing = merged.get(item.id);
-    if (!existing) {
-      merged.set(item.id, item);
-      return;
-    }
-
-    const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
-    const nextTime = new Date(item.updatedAt || item.createdAt || 0).getTime();
-    if (nextTime >= existingTime) {
-      merged.set(item.id, item);
-    }
-  };
-
-  remoteItems.forEach(considerItem);
-  localItems.forEach(considerItem);
-
-  return [...merged.values()];
 }
 
 async function findMatchingRemoteTaskRows(item, activeUser) {
@@ -1148,8 +1083,7 @@ function deserializeTaskRecord(taskRow) {
     occurrenceProgress: normalizeOccurrenceProgressMap(stored.occurrenceProgress),
     progress: Number(stored.progress) || 0,
     completed: Boolean(stored.completed),
-    createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString(),
-    updatedAt: stored.updatedAt || taskRow.updated_at || taskRow.created_at || new Date().toISOString()
+    createdAt: stored.createdAt || taskRow.created_at || new Date().toISOString()
   };
 }
 
@@ -1238,8 +1172,7 @@ async function handleAddItem(event) {
     occurrenceProgress: existingItem?.occurrenceProgress || {},
     progress: existingItem?.progress || 0,
     completed: existingItem?.completed || false,
-    createdAt: existingItem?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    createdAt: existingItem?.createdAt || new Date().toISOString()
   };
 
   state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
@@ -2193,7 +2126,6 @@ function buildUpdatedProgressItem(item, progressInput, occurrenceDate = null) {
   });
   updatedItem.progress = usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : occurrenceProgress;
   updatedItem.completed = usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : occurrenceCompleted;
-  updatedItem.updatedAt = new Date().toISOString();
   return updatedItem;
 }
 
@@ -3284,8 +3216,7 @@ function applyCompletedPomodoroToItem(item, focusMinutes, occurrenceDate = new D
     ...updatedItem,
     actualHours: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.actualHours) || 0 : actualHours,
     progress: usesOccurrenceProgress(updatedItem) ? Number(updatedItem.progress) || 0 : progress,
-    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed,
-    updatedAt: new Date().toISOString()
+    completed: usesOccurrenceProgress(updatedItem) ? Boolean(updatedItem.completed) : completed
   };
 }
 
