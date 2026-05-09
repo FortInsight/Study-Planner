@@ -1017,8 +1017,9 @@ function dedupeTaskRows(taskRows) {
       return;
     }
 
-    const existingTime = new Date(existing.row.created_at || 0).getTime();
-    const nextTime = new Date(row.created_at || 0).getTime();
+    // Prefer updated_at over created_at so progress updates win over the original insert
+    const existingTime = new Date(existing.row.updated_at || existing.row.created_at || 0).getTime();
+    const nextTime = new Date(row.updated_at || row.created_at || 0).getTime();
     if (nextTime >= existingTime) {
       byPlannerId.set(deserialized.id, { row, deserialized });
     }
@@ -1808,7 +1809,11 @@ function renderItems() {
         };
         saveState();
         render();
-        void refreshTasksFromSupabase({ renderAfter: true });
+        // Delay refresh so Supabase updated_at has time to settle before re-fetch;
+        // without this the stale row can win the dedupeTaskRows comparison.
+        window.setTimeout(() => {
+          void refreshTasksFromSupabase({ renderAfter: false });
+        }, 3000);
       } catch (error) {
         saveFeedbackByItemId[saveFeedbackKey] = {
           tone: "pending",
