@@ -119,6 +119,7 @@ let topShellHidden = false;
 let hasActiveSession = false;
 let currentSessionUser = null;
 let isInitializingAuth = false;
+let isRestoringSupabaseSession = false;
 let isManualSignOut = false;
 let debugStatus = {
   userEmail: "",
@@ -489,26 +490,40 @@ async function initializeAuth() {
 
   if (isHostedApp) {
     isInitializingAuth = true;
+    const cachedSession = loadSupabaseSession();
+    const cachedUser = cachedSession?.user?.email ? cachedSession.user : null;
     try {
+      if (cachedUser?.email) {
+        await applySignedInUser(cachedUser.email, cachedUser, { silent: true });
+      }
+
       const sessionResult = await supabaseClient.auth.getSession();
-      const session = sessionResult.data?.session || null;
+      let session = sessionResult.data?.session || null;
 
       if (sessionResult.error) {
         authMessage.textContent = sessionResult.error.message;
+      }
+
+      if (!session?.user?.email) {
+        session = await restoreSupabaseSessionFromCache();
       }
 
       if (session?.user?.email) {
         saveSupabaseSession(session);
         await ensureSupabaseProfile(session.user);
         await applySignedInUser(session.user.email, session.user, { silent: true });
-      } else {
+      } else if (!cachedUser?.email) {
         clearSupabaseSession();
         applySignedOutUser({ silent: true, preserveRememberedUser: false });
       }
     } catch (error) {
-      clearSupabaseSession();
-      applySignedOutUser({ silent: true, preserveRememberedUser: false });
-      authMessage.textContent = "We could not initialize Supabase sign in right now.";
+      if (cachedUser?.email) {
+        await applySignedInUser(cachedUser.email, cachedUser, { silent: true });
+      } else {
+        clearSupabaseSession();
+        applySignedOutUser({ silent: true, preserveRememberedUser: false });
+        authMessage.textContent = "We could not initialize Supabase sign in right now.";
+      }
     } finally {
       isInitializingAuth = false;
     }
@@ -520,6 +535,16 @@ async function initializeAuth() {
         await applySignedInUser(session.user.email, session.user, { silent: true });
         render();
         return;
+      }
+
+      if (!isManualSignOut) {
+        const restoredSession = await restoreSupabaseSessionFromCache();
+        if (restoredSession?.user?.email) {
+          await ensureSupabaseProfile(restoredSession.user);
+          await applySignedInUser(restoredSession.user.email, restoredSession.user, { silent: true });
+          render();
+          return;
+        }
       }
 
       clearSupabaseSession();
@@ -599,12 +624,22 @@ async function initializeAuth() {
     }
 
     const cachedSession = loadSupabaseSession();
-    if (!isManualSignOut && cachedSession?.user?.email) {
-      if (!hasActiveSession || !currentSessionUser?.id) {
-        await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
+    if (!isManualSignOut) {
+      const restoredSession = await restoreSupabaseSessionFromCache();
+      if (restoredSession?.user?.email) {
+        await ensureSupabaseProfile(restoredSession.user);
+        await applySignedInUser(restoredSession.user.email, restoredSession.user, { silent: true });
+        render();
+        return;
       }
-      render();
-      return;
+
+      if (cachedSession?.user?.email) {
+        if (!hasActiveSession || !currentSessionUser?.id) {
+          await applySignedInUser(cachedSession.user.email, cachedSession.user, { silent: true });
+        }
+        render();
+        return;
+      }
     }
 
     if (isLocalFileApp && !isManualSignOut && authState.rememberedUser?.email) {
@@ -749,7 +784,10 @@ function hydrateSharedPlannerStateFromUser(user) {
   }
 
   if (sharedState.timerSession) {
-    state.timerSession = normalizeTimerSession(sharedState.timerSession);
+    const remoteTimerSession = normalizeTimerSession(sharedState.timerSession);
+    if (!state.timerSession?.running) {
+      state.timerSession = remoteTimerSession;
+    }
   }
 }
 
@@ -765,7 +803,7 @@ function scheduleSharedStateSync() {
   sharedStateSyncTimeout = window.setTimeout(() => {
     sharedStateSyncTimeout = null;
     syncSharedPlannerStateToSupabase();
-  }, 250);
+  }, 1500);
 }
 
 async function updateProfileNameMetadata(nextName) {
@@ -773,12 +811,7 @@ async function updateProfileNameMetadata(nextName) {
     data: {
       full_name: nextName,
       display_name: nextName,
-      study_planner_state: {
-        deletedItemIds: state.deletedItemIds,
-        sessions: state.sessions,
-        timerSettings: state.timerSettings,
-        timerSession: state.timerSession
-      }
+      study_planner_state: buildSharedPlannerStateSnapshot()
     }
   });
 }
@@ -789,12 +822,7 @@ async function syncSharedPlannerStateToSupabase() {
   }
 
   const payload = {
-    study_planner_state: {
-      deletedItemIds: state.deletedItemIds,
-      sessions: state.sessions,
-      timerSettings: state.timerSettings,
-      timerSession: state.timerSession
-    },
+    study_planner_state: buildSharedPlannerStateSnapshot(),
     ...(profileDisplayName
       ? {
           full_name: profileDisplayName,
@@ -870,9 +898,7 @@ async function loadTasksFromSupabase(user = null, options = {}) {
   }
 
   const remoteItems = dedupeTaskRows(data || []).filter((item) => !state.deletedItemIds.includes(item.id));
-  state.items = isHostedApp
-    ? remoteItems
-    : mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
+  state.items = mergePlannerItems(remoteItems, state.items, state.deletedItemIds);
 
   debugStatus.userEmail = activeUser.email || getCurrentUser();
   debugStatus.userId = activeUser.id || "";
@@ -1249,13 +1275,64 @@ async function handleAddItem(event) {
     occurrenceProgress: existingItem?.occurrenceProgress || {},
     progress: existingItem?.progress || 0,
     completed: existingItem?.completed || false,
+    updatedAt: new Date().toISOString(),
     createdAt: existingItem?.createdAt || new Date().toISOString()
   };
 
-  state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
-
   item.progress = getDisplayedTimeProgress(item);
   item.completed = isStudyGoalAchieved(item);
+
+  if (plannerSaveStatus) {
+    plannerSaveStatus.className = "save-status full-span pending";
+    plannerSaveStatus.textContent = "Saving plan...";
+  }
+
+  if (isHostedApp) {
+    try {
+      state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
+      const savedItem = await saveTaskToSupabase(item, null, {
+        skipRemoteLookup: !existingItem
+      });
+
+      if (existingItem) {
+        state.items = state.items.map((entry) => entry.id === existingItem.id ? savedItem : entry);
+      } else {
+        state.items.unshift(savedItem);
+      }
+      saveState();
+      resetPlannerForm();
+      if (plannerSaveStatus) {
+        plannerSaveStatus.className = "save-status full-span saved";
+        plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+        schedulePlannerSaveStatusClear();
+      }
+      if (!existingItem && !timer.running) {
+        timerCourseSelect.value = savedItem.id;
+        timer.selectedItemId = savedItem.id;
+        syncTimerWithSelection(true);
+        saveTimerSession();
+      } else if (!timerCourseSelect.value) {
+        timer.selectedItemId = savedItem.id;
+      }
+      render();
+      window.setTimeout(() => {
+        void refreshTasksFromSupabase({ renderAfter: true });
+      }, 1000);
+      return;
+    } catch (error) {
+      state.items = previousItems;
+      state.deletedItemIds = previousDeletedIds;
+      saveState();
+      if (plannerSaveStatus) {
+        plannerSaveStatus.className = "save-status full-span pending";
+        plannerSaveStatus.textContent = error?.message || "Cloud save failed. Please sign in again and retry.";
+      }
+      render();
+      return;
+    }
+  }
+
+  state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
 
   if (existingItem) {
     state.items = state.items.map((entry) => entry.id === existingItem.id ? item : entry);
@@ -1301,11 +1378,6 @@ async function handleAddItem(event) {
       void refreshTasksFromSupabase({ renderAfter: true });
     }, 2000);
   } catch (error) {
-    if (isHostedApp) {
-      state.items = previousItems;
-      state.deletedItemIds = previousDeletedIds;
-      saveState();
-    }
     if (plannerSaveStatus) {
       plannerSaveStatus.className = "save-status full-span pending";
       plannerSaveStatus.textContent = error?.message || "Cloud save failed. Please sign in again and retry.";
@@ -1399,14 +1471,18 @@ function buildTimerFromSession(session) {
   const normalized = normalizeTimerSession(session);
   if (!normalized) return null;
 
+  const restoredPausedSeconds = normalized.running
+    ? normalized.secondsLeft
+    : (normalized.pausedSecondsLeft || null);
+
   return {
     intervalId: null,
     mode: normalized.mode,
     secondsLeft: normalized.secondsLeft,
-    running: normalized.running,
+    running: false,
     selectedItemId: normalized.selectedItemId,
-    stageEndsAt: normalized.stageEndsAt,
-    pausedSecondsLeft: normalized.pausedSecondsLeft || null
+    stageEndsAt: null,
+    pausedSecondsLeft: restoredPausedSeconds
   };
 }
 
@@ -2754,6 +2830,33 @@ function syncTimerClock() {
   saveState();
 }
 
+function getSharedTimerSessionSnapshot() {
+  const normalized = normalizeTimerSession(state.timerSession);
+  if (!normalized) {
+    return null;
+  }
+
+  if (!normalized.running) {
+    return normalized;
+  }
+
+  return {
+    ...normalized,
+    running: false,
+    stageEndsAt: null,
+    pausedSecondsLeft: normalized.secondsLeft
+  };
+}
+
+function buildSharedPlannerStateSnapshot() {
+  return {
+    deletedItemIds: state.deletedItemIds,
+    sessions: state.sessions,
+    timerSettings: state.timerSettings,
+    timerSession: getSharedTimerSessionSnapshot()
+  };
+}
+
 function handleTimerVisibilityChange() {
   syncTimerClock();
   if (hasActiveSession) {
@@ -3431,6 +3534,36 @@ function createSupabaseClient() {
       detectSessionInUrl: true
     }
   });
+}
+
+async function restoreSupabaseSessionFromCache() {
+  if (!supabaseClient || isRestoringSupabaseSession) {
+    return null;
+  }
+
+  const cachedSession = loadSupabaseSession();
+  if (!cachedSession?.access_token || !cachedSession?.refresh_token) {
+    return null;
+  }
+
+  isRestoringSupabaseSession = true;
+  try {
+    const restored = await supabaseClient.auth.setSession({
+      access_token: cachedSession.access_token,
+      refresh_token: cachedSession.refresh_token
+    });
+
+    if (restored.error || !restored.data?.session) {
+      return null;
+    }
+
+    saveSupabaseSession(restored.data.session);
+    return restored.data.session;
+  } catch (error) {
+    return null;
+  } finally {
+    isRestoringSupabaseSession = false;
+  }
 }
 
 function getPasswordResetRedirect() {
