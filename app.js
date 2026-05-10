@@ -982,6 +982,10 @@ async function refreshTasksFromSupabase(options = {}) {
     return;
   }
 
+  if (options.background && shouldPreserveRunningTimerSelection()) {
+    return;
+  }
+
   taskRefreshInFlight = true;
   try {
     const previousSelectedItemId = timer.selectedItemId;
@@ -1027,7 +1031,7 @@ function startTaskSyncLoop() {
   }
 
   taskSyncIntervalId = window.setInterval(() => {
-    void refreshTasksFromSupabase({ renderAfter: true });
+    void refreshTasksFromSupabase({ renderAfter: true, background: true });
   }, 15000);
 }
 
@@ -3111,8 +3115,8 @@ function buildSharedPlannerStateSnapshot() {
 
 function handleTimerVisibilityChange() {
   syncTimerClock();
-  if (hasActiveSession) {
-    void refreshTasksFromSupabase({ renderAfter: false });
+  if (hasActiveSession && !shouldPreserveRunningTimerSelection()) {
+    void refreshTasksFromSupabase({ renderAfter: false, background: true });
   }
   render();
 }
