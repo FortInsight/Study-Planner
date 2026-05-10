@@ -156,7 +156,7 @@ document.addEventListener("visibilitychange", handleTimerVisibilityChange);
 window.addEventListener("focus", handleTimerVisibilityChange);
 window.addEventListener("hashchange", syncSectionNavFromHash);
 
-registerServiceWorker();
+disablePwa();
 if (authEmailInput && authState.lastEmail) {
   authEmailInput.value = authState.lastEmail;
 }
@@ -3732,12 +3732,12 @@ function getPlannerStorageKey() {
   return user ? `${STORAGE_KEY}-${user}` : STORAGE_KEY;
 }
 
-function registerServiceWorker() {
+function disablePwa() {
   if (!("serviceWorker" in navigator)) {
     return;
   }
 
-  window.addEventListener("load", () => {
+  const cleanup = () => {
     navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(
       registrations.map((registration) => registration.unregister())
     )).catch(() => null);
@@ -3749,7 +3749,14 @@ function registerServiceWorker() {
           .map((key) => caches.delete(key))
       )).catch(() => null);
     }
-  });
+  };
+
+  if (document.readyState === "complete") {
+    cleanup();
+    return;
+  }
+
+  window.addEventListener("load", cleanup, { once: true });
 }
 
 function focusMainApp() {
