@@ -193,6 +193,40 @@ function shouldPreserveRunningTimerSelection() {
   );
 }
 
+function getTimerSessionTimestamp(session) {
+  return new Date(session?.updatedAt || 0).getTime();
+}
+
+function choosePreferredTimerSession(localSession, remoteSession) {
+  const normalizedLocal = normalizeTimerSession(localSession);
+  const normalizedRemote = normalizeTimerSession(remoteSession);
+
+  if (!normalizedLocal) return normalizedRemote;
+  if (!normalizedRemote) return normalizedLocal;
+
+  const localTimestamp = getTimerSessionTimestamp(normalizedLocal);
+  const remoteTimestamp = getTimerSessionTimestamp(normalizedRemote);
+
+  if (localTimestamp || remoteTimestamp) {
+    return localTimestamp >= remoteTimestamp ? normalizedLocal : normalizedRemote;
+  }
+
+  const localHasProgress = normalizedLocal.running
+    || normalizedLocal.pausedSecondsLeft > 0
+    || normalizedLocal.secondsLeft > 0
+    || Boolean(normalizedLocal.selectedItemId);
+  const remoteHasProgress = normalizedRemote.running
+    || normalizedRemote.pausedSecondsLeft > 0
+    || normalizedRemote.secondsLeft > 0
+    || Boolean(normalizedRemote.selectedItemId);
+
+  if (localHasProgress !== remoteHasProgress) {
+    return localHasProgress ? normalizedLocal : normalizedRemote;
+  }
+
+  return normalizedLocal;
+}
+
 function loadState() {
   const storageKey = getPlannerStorageKey();
   try {
@@ -684,10 +718,6 @@ async function applySignedInUser(email, user = null, options = {}) {
   } : authState.rememberedUser;
   saveAuthState();
   state = loadState();
-  if (isHostedApp) {
-    state.items = [];
-    state.deletedItemIds = [];
-  }
   hasActiveSession = true;
   currentSessionUser = user || null;
   authPanelCollapsed = false;
@@ -798,10 +828,7 @@ function hydrateSharedPlannerStateFromUser(user) {
   }
 
   if (sharedState.timerSession) {
-    const remoteTimerSession = normalizeTimerSession(sharedState.timerSession);
-    if (!state.timerSession?.running) {
-      state.timerSession = remoteTimerSession;
-    }
+    state.timerSession = choosePreferredTimerSession(state.timerSession, sharedState.timerSession);
   }
 }
 
@@ -1607,7 +1634,8 @@ function normalizeTimerSession(session) {
     running: Boolean(session.running),
     selectedItemId: session.selectedItemId || "",
     stageEndsAt: session.stageEndsAt ? Number(session.stageEndsAt) : null,
-    pausedSecondsLeft: Math.max(0, Number(session.pausedSecondsLeft) || 0)
+    pausedSecondsLeft: Math.max(0, Number(session.pausedSecondsLeft) || 0),
+    updatedAt: session.updatedAt || null
   };
 }
 
@@ -1637,7 +1665,8 @@ function saveTimerSession() {
     running: timer.running,
     selectedItemId: timer.selectedItemId,
     stageEndsAt: timer.stageEndsAt,
-    pausedSecondsLeft: timer.pausedSecondsLeft
+    pausedSecondsLeft: timer.pausedSecondsLeft,
+    updatedAt: new Date().toISOString()
   };
   saveState();
 }
@@ -3046,7 +3075,8 @@ function syncTimerClock() {
     running: timer.running,
     selectedItemId: timer.selectedItemId,
     stageEndsAt: timer.stageEndsAt,
-    pausedSecondsLeft: timer.pausedSecondsLeft
+    pausedSecondsLeft: timer.pausedSecondsLeft,
+    updatedAt: new Date().toISOString()
   };
   saveState();
 }
