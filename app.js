@@ -709,6 +709,26 @@ async function initializeAuth() {
 }
 
 async function applySignedInUser(email, user = null, options = {}) {
+  const shouldKeepActiveTimer = Boolean(timer?.running || timer?.pausedSecondsLeft !== null);
+  const preservedTimer = shouldKeepActiveTimer ? {
+    intervalId: timer.intervalId,
+    mode: timer.mode,
+    secondsLeft: timer.secondsLeft,
+    running: timer.running,
+    selectedItemId: timer.selectedItemId,
+    stageEndsAt: timer.stageEndsAt,
+    pausedSecondsLeft: timer.pausedSecondsLeft
+  } : null;
+  const preservedTimerSession = shouldKeepActiveTimer ? {
+    mode: timer.mode,
+    secondsLeft: timer.secondsLeft,
+    running: timer.running,
+    selectedItemId: timer.selectedItemId,
+    stageEndsAt: timer.stageEndsAt,
+    pausedSecondsLeft: timer.pausedSecondsLeft,
+    updatedAt: new Date().toISOString()
+  } : null;
+
   authState.currentUser = email;
   authState.lastEmail = email;
   authState.rememberedUser = user?.email ? {
@@ -726,7 +746,15 @@ async function applySignedInUser(email, user = null, options = {}) {
   debugStatus.userEmail = email || "";
   debugStatus.userId = user?.id || debugStatus.userId || "";
   hydrateSharedPlannerStateFromUser(user);
-  timer = createDefaultTimer();
+
+  if (shouldKeepActiveTimer && preservedTimer) {
+    state.timerSession = choosePreferredTimerSession(state.timerSession, preservedTimerSession);
+    timer = preservedTimer;
+    saveState();
+  } else {
+    timer = createDefaultTimer();
+  }
+
   startTaskSyncLoop();
   if (!options.silent) {
     render();
