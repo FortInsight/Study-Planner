@@ -71,6 +71,16 @@ const deletePlanButton = document.getElementById("deletePlanButton");
 const layout = document.querySelector(".layout");
 const plannerSaveStatus = document.getElementById("plannerSaveStatus");
 const itemsList = document.getElementById("itemsList");
+const todoForm = document.getElementById("todoForm");
+const todoCourseSelect = document.getElementById("todoCourseSelect");
+const todoEntryTypeSelect = document.getElementById("todoEntryType");
+const todoTaskInput = document.getElementById("todoTaskInput");
+const todoParentTaskField = document.getElementById("todoParentTaskField");
+const todoParentTaskSelect = document.getElementById("todoParentTaskSelect");
+const todoInputField = document.getElementById("todoInputField");
+const todoInput = document.getElementById("todoInput");
+const todoSaveStatus = document.getElementById("todoSaveStatus");
+const todoCourseList = document.getElementById("todoCourseList");
 const reportCards = document.getElementById("reportCards");
 const focusTrend = document.getElementById("focusTrend");
 const focusTrendSubtitle = document.getElementById("focusTrendSubtitle");
@@ -140,6 +150,9 @@ saveProfileNameButton?.addEventListener("click", handleProfileNameSave);
 hideLoginButton?.addEventListener("click", hideTopShell);
 showLoginButton?.addEventListener("click", showTopShell);
 form.addEventListener("submit", handleAddItem);
+todoForm?.addEventListener("submit", handleTodoSubmit);
+todoCourseSelect?.addEventListener("change", syncTodoTaskOptions);
+todoEntryTypeSelect?.addEventListener("change", syncTodoEntryMode);
 existingPlanIdInput.addEventListener("change", handleExistingPlanSelection);
 createPlanModeButton.addEventListener("click", setCreatePlanMode);
 updatePlanModeButton.addEventListener("click", setUpdatePlanMode);
@@ -184,6 +197,120 @@ function loadAuthState() {
 
 function getItemTimestamp(item) {
   return new Date(item?.updatedAt || item?.createdAt || 0).getTime();
+}
+
+function normalizeTodoItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  const hasStructuredEntries = items.some((entry) => entry?.kind === "task" || entry?.kind === "subtask");
+  if (hasStructuredEntries) {
+    return items
+      .map((entry) => ({
+        id: entry?.id || makeId(),
+        kind: entry?.kind === "task" ? "task" : "subtask",
+        text: String(entry?.text || "").trim(),
+        done: Boolean(entry?.done),
+        parentTaskId: String(entry?.parentTaskId || ""),
+        taskTitle: String(entry?.taskTitle || "").trim()
+      }))
+      .filter((entry) => entry.text);
+  }
+
+  const grouped = new Map();
+  items.forEach((entry) => {
+    const taskTitle = String(entry?.taskTitle || "General").trim() || "General";
+    if (!grouped.has(taskTitle)) {
+      grouped.set(taskTitle, []);
+    }
+    grouped.get(taskTitle).push({
+      id: entry?.id || makeId(),
+      text: String(entry?.text || "").trim(),
+      done: Boolean(entry?.done)
+    });
+  });
+
+  const normalized = [];
+  grouped.forEach((subtasks, taskTitle) => {
+    const taskId = makeId();
+    normalized.push({
+      id: taskId,
+      kind: "task",
+      text: taskTitle,
+      done: false,
+      parentTaskId: "",
+      taskTitle: taskTitle
+    });
+    subtasks.forEach((subtask) => {
+      if (!subtask.text) {
+        return;
+      }
+      normalized.push({
+        id: subtask.id,
+        kind: "subtask",
+        text: subtask.text,
+        done: subtask.done,
+        parentTaskId: taskId,
+        taskTitle: taskTitle
+      });
+    });
+  });
+
+  return normalized;
+}
+
+function getTodoCompletionPercent(item) {
+  const todoItems = normalizeTodoItems(item?.todoItems);
+  const total = todoItems.length;
+  if (!total) return 0;
+  const completed = todoItems.filter((entry) => entry.done).length;
+  return Math.round((completed / total) * 100);
+}
+
+function parseTodoLines(value, taskTitle = "General", parentTaskId = "") {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((text) => ({
+      id: makeId(),
+      text,
+      kind: "subtask",
+      done: false,
+      parentTaskId,
+      taskTitle: String(taskTitle || "General").trim() || "General"
+    }));
+}
+
+function getTodoChildren(todoItems, parentTaskId = "") {
+  return todoItems.filter((entry) => (entry.parentTaskId || "") === parentTaskId);
+}
+
+function getTodoDescendantIds(todoItems, parentId) {
+  const directChildren = todoItems.filter((entry) => entry.parentTaskId === parentId);
+  return directChildren.flatMap((child) => [child.id, ...getTodoDescendantIds(todoItems, child.id)]);
+}
+
+function buildTodoOptionEntries(todoItems, parentId = "", depth = 0, entries = []) {
+  const children = getTodoChildren(todoItems, parentId);
+  children.forEach((child) => {
+    entries.push({
+      id: child.id,
+      label: `${"\u00A0\u00A0".repeat(depth)}${depth > 0 ? "\u21B3 " : ""}${child.text}`
+    });
+    buildTodoOptionEntries(todoItems, child.id, depth + 1, entries);
+  });
+  return entries;
+}
+
+function isTodoInlineEditing() {
+  return Boolean(todoCourseList?.querySelector('[data-editing="true"]'));
+}
+
+function getAllowedTodoParentOptions(todoItems, todo) {
+  const blockedIds = new Set([todo.id, ...getTodoDescendantIds(todoItems, todo.id)]);
+  return buildTodoOptionEntries(todoItems).filter((entry) => !blockedIds.has(entry.id));
 }
 
 function shouldPreserveRunningTimerSelection() {
@@ -844,7 +971,7 @@ function hydrateSharedPlannerStateFromUser(user) {
     state.sessions = sharedState.sessions;
   }
 
-  if (!isHostedApp && Array.isArray(sharedState.deletedItemIds)) {
+  if (Array.isArray(sharedState.deletedItemIds)) {
     // Merge remote deletedItemIds with local ones — never replace, so a
     // locally-deleted item can't be resurrected by stale remote metadata.
     const merged = [...new Set([...state.deletedItemIds, ...sharedState.deletedItemIds])];
@@ -987,7 +1114,11 @@ async function loadTasksFromSupabase(user = null, options = {}) {
 
   const remoteItems = dedupeTaskRows(data || []);
   if (isHostedApp) {
-    state.items = mergePlannerItems(remoteItems, state.items, []);
+    state.items = mergePlannerItems(
+      remoteItems.filter((item) => !state.deletedItemIds.includes(item.id)),
+      state.items,
+      state.deletedItemIds
+    );
   } else {
     state.items = mergePlannerItems(
       remoteItems.filter((item) => !state.deletedItemIds.includes(item.id)),
@@ -1095,20 +1226,33 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
     description: serializeTaskDescription(item)
   };
 
-  const query = remoteTaskId
-    ? supabaseClient
-      .from("tasks")
-      .upsert(
-        { id: remoteTaskId, ...payload },
-        { onConflict: "id" }
-      )
-      .select()
-    : supabaseClient
-      .from("tasks")
-      .insert(payload)
-      .select();
+  let savedRow = null;
+  let error = null;
 
-  const { data, error } = await withTimeout(query, 5000, "Supabase task save");
+  if (remoteTaskId) {
+    const result = await withTimeout(
+      supabaseClient
+        .from("tasks")
+        .update(payload)
+        .eq("id", remoteTaskId)
+        .eq("user_id", activeUser.id),
+      15000,
+      "Supabase task save"
+    );
+    error = result?.error || null;
+    savedRow = error ? null : { id: remoteTaskId, ...payload };
+  } else {
+    const result = await withTimeout(
+      supabaseClient
+        .from("tasks")
+        .insert(payload)
+        .select(),
+      15000,
+      "Supabase task save"
+    );
+    error = result?.error || null;
+    savedRow = Array.isArray(result?.data) ? result.data[0] : result?.data;
+  }
 
   if (error) {
     debugStatus.userEmail = activeUser.email || getCurrentUser();
@@ -1118,8 +1262,6 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
     console.error("Task save error:", error);
     throw new Error(error.message);
   }
-
-  const savedRow = Array.isArray(data) ? data[0] : data;
 
   // For new inserts: re-save the description with remoteTaskId embedded so
   // deserializeTaskRecord can always recover the local id on next load.
@@ -1131,7 +1273,7 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
         .update({ description: serializeTaskDescription(itemWithRemote) })
         .eq("id", savedRow.id)
         .eq("user_id", activeUser.id),
-      5000,
+      15000,
       "Supabase task post-save update"
     );
   }
@@ -1141,6 +1283,9 @@ async function saveTaskToSupabase(item, user = null, options = {}) {
   debugStatus.latestSaveStatus = `Task saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   debugStatus.latestSupabaseError = "None";
   debugStatus.taskLoadCount = state.items.length;
+  if (remoteTaskId) {
+    return normalizePlannerItem({ ...item, remoteTaskId });
+  }
   return savedRow ? deserializeTaskRecord(savedRow) : item;
 }
 
@@ -1172,7 +1317,7 @@ async function deleteTaskFromSupabase(item, user = null) {
       .delete()
       .in("id", uniqueRemoteTaskIds)
       .eq("user_id", activeUser.id),
-    5000,
+    15000,
     "Supabase task delete"
   );
 
@@ -1277,6 +1422,7 @@ function deserializeTaskRecord(taskRow) {
     actualUnits: Number(stored.actualUnits) || 0,
     contentStart: stored.contentStart || "",
     contentStop: stored.contentStop || "",
+    todoItems: normalizeTodoItems(stored.todoItems),
     occurrenceProgress: normalizeOccurrenceProgressMap(stored.occurrenceProgress),
     progress: Number(stored.progress) || 0,
     completed: Boolean(stored.completed),
@@ -1348,6 +1494,7 @@ function normalizePlannerItem(item) {
     actualUnits: Number(item?.actualUnits) || 0,
     contentStart: item?.contentStart || "",
     contentStop: item?.contentStop || "",
+    todoItems: normalizeTodoItems(item?.todoItems),
     occurrenceProgress: normalizeOccurrenceProgressMap(item?.occurrenceProgress),
     progress: Number(item?.progress) || 0,
     completed: Boolean(item?.completed),
@@ -1388,6 +1535,16 @@ async function getAuthenticatedSupabaseUser() {
     return null;
   }
 
+  if (currentSessionUser?.id) {
+    debugStatus.latestSupabaseError = "None";
+    return currentSessionUser;
+  }
+
+  if (authState.rememberedUser?.id && authState.rememberedUser?.email) {
+    debugStatus.latestSupabaseError = "None";
+    return authState.rememberedUser;
+  }
+
   if (isHostedApp) {
     const sessionResult = await withTimeout(
       supabaseClient.auth.getSession(),
@@ -1402,6 +1559,7 @@ async function getAuthenticatedSupabaseUser() {
 
   const restoredSession = await restoreSupabaseSessionFromCache();
   if (restoredSession?.user) {
+    currentSessionUser = restoredSession.user;
     debugStatus.latestSupabaseError = "None";
     return restoredSession.user;
   }
@@ -1412,6 +1570,7 @@ async function getAuthenticatedSupabaseUser() {
     "Supabase auth lookup"
   );
   if (data?.user) {
+    currentSessionUser = data.user;
     debugStatus.latestSupabaseError = "None";
     return data.user;
   }
@@ -1430,6 +1589,10 @@ async function getAuthenticatedSupabaseUser() {
     console.error("Auth user lookup retry error:", secondAttempt.error);
     debugStatus.latestSupabaseError = secondAttempt.error.message;
     return null;
+  }
+
+  if (secondAttempt.data?.user) {
+    currentSessionUser = secondAttempt.data.user;
   }
 
   return secondAttempt.data?.user || null;
@@ -1476,6 +1639,7 @@ async function handleAddItem(event) {
     actualUnits: existingItem?.actualUnits || 0,
     contentStart: existingItem?.contentStart || "",
     contentStop: existingItem?.contentStop || "",
+    todoItems: normalizeTodoItems(existingItem?.todoItems),
     occurrenceProgress: existingItem?.occurrenceProgress || {},
     progress: existingItem?.progress || 0,
     completed: existingItem?.completed || false,
@@ -2000,6 +2164,7 @@ function render() {
   renderTimerSettingsSummary();
   renderTimelineHeader();
   renderItems();
+  renderTodoPage();
   renderReports();
   renderTimer();
   syncSectionNavFromHash();
@@ -2267,6 +2432,455 @@ function renderItems() {
     }
 
     itemsList.appendChild(fragment);
+  });
+}
+
+function renderTodoCourseOptions() {
+  if (!todoCourseSelect) {
+    return;
+  }
+
+  const currentValue = todoCourseSelect.value;
+  const visibleItems = state.items.filter((item) => !state.deletedItemIds.includes(item.id));
+  const options = visibleItems.map((item) => (
+    `<option value="${item.id}">${escapeHtml(item.course)}</option>`
+  )).join("");
+
+  todoCourseSelect.innerHTML = `<option value="">Choose a course</option>${options}`;
+
+  if (visibleItems.some((item) => item.id === currentValue)) {
+    todoCourseSelect.value = currentValue;
+  } else if (visibleItems.length) {
+    todoCourseSelect.value = visibleItems[0].id;
+  }
+
+  syncTodoTaskOptions();
+}
+
+async function persistTodoItemUpdate(updatedItem, previousItems, onErrorMessage = "To-do update failed. Please try again.") {
+  state.items = state.items.map((entry) => entry.id === updatedItem.id ? updatedItem : entry);
+  saveState();
+  render();
+
+  try {
+    const savedItem = await saveTaskToSupabase(updatedItem);
+    state.items = state.items.map((entry) => entry.id === updatedItem.id ? savedItem : entry);
+    saveState();
+    render();
+    return true;
+  } catch (error) {
+    state.items = previousItems;
+    saveState();
+    if (todoSaveStatus) {
+      todoSaveStatus.className = "save-status full-span pending";
+      todoSaveStatus.textContent = error?.message || onErrorMessage;
+    }
+    render();
+    return false;
+  }
+}
+
+function syncTodoEntryMode() {
+  if (!todoEntryTypeSelect || !todoParentTaskField || !todoTaskInput || !todoInputField || !todoInput) {
+    return;
+  }
+
+  const isTaskMode = todoEntryTypeSelect.value === "task";
+  todoParentTaskField.hidden = isTaskMode;
+  todoTaskInput.parentElement.hidden = !isTaskMode;
+  todoInputField.hidden = isTaskMode;
+  todoInput.required = !isTaskMode;
+  todoTaskInput.required = isTaskMode;
+}
+
+function syncTodoTaskOptions() {
+  if (!todoParentTaskSelect || !todoCourseSelect) {
+    return;
+  }
+
+  const selectedCourse = state.items.find((item) => item.id === todoCourseSelect.value);
+  const currentValue = todoParentTaskSelect.value;
+  const todoItems = normalizeTodoItems(selectedCourse?.todoItems);
+  const optionEntries = buildTodoOptionEntries(todoItems);
+  const taskOptions = optionEntries.map((entry) => (
+    `<option value="${entry.id}">${escapeHtml(entry.label)}</option>`
+  )).join("");
+
+  todoParentTaskSelect.innerHTML = `<option value="">Choose a task or subtask</option>${taskOptions}`;
+
+  if (optionEntries.some((entry) => entry.id === currentValue)) {
+    todoParentTaskSelect.value = currentValue;
+  } else if (optionEntries.length) {
+    todoParentTaskSelect.value = optionEntries[0].id;
+  }
+
+  syncTodoEntryMode();
+}
+
+async function handleTodoSubmit(event) {
+  event.preventDefault();
+  if (!todoCourseSelect || !todoInput || !todoSaveStatus || !todoEntryTypeSelect) {
+    return;
+  }
+
+  const selectedItem = state.items.find((item) => item.id === todoCourseSelect.value);
+  const entryType = todoEntryTypeSelect.value;
+  const taskTitle = String(todoTaskInput?.value || "").trim() || "General";
+  const parentTaskId = todoParentTaskSelect?.value || "";
+  const todoItems = normalizeTodoItems(selectedItem?.todoItems);
+  const selectedTask = todoItems.find((task) => task.id === parentTaskId);
+  const resolvedTaskTitle = selectedTask?.text || taskTitle;
+  const newTodos = entryType === "task"
+    ? []
+    : parseTodoLines(todoInput.value, resolvedTaskTitle, parentTaskId);
+
+  if (!selectedItem) {
+    todoSaveStatus.className = "save-status full-span pending";
+    todoSaveStatus.textContent = "Choose a course first.";
+    return;
+  }
+
+  if (entryType === "task" && !taskTitle) {
+    todoSaveStatus.className = "save-status full-span pending";
+    todoSaveStatus.textContent = "Enter a task name first.";
+    return;
+  }
+
+  if (entryType === "subtask" && !parentTaskId) {
+    todoSaveStatus.className = "save-status full-span pending";
+    todoSaveStatus.textContent = "Choose a task first.";
+    return;
+  }
+
+  if (entryType === "subtask" && !newTodos.length) {
+    todoSaveStatus.className = "save-status full-span pending";
+    todoSaveStatus.textContent = "Paste at least one to-do item.";
+    return;
+  }
+
+  const previousItems = state.items.map((entry) => normalizePlannerItem(entry));
+  const baseTodoItems = normalizeTodoItems(selectedItem.todoItems);
+  const updatedItem = normalizePlannerItem({
+    ...selectedItem,
+    todoItems: entryType === "task"
+      ? [...baseTodoItems, {
+        id: makeId(),
+        kind: "task",
+        text: taskTitle,
+        done: false,
+        parentTaskId: "",
+        taskTitle: taskTitle
+      }]
+      : [...baseTodoItems, ...newTodos],
+    updatedAt: new Date().toISOString()
+  });
+
+  todoSaveStatus.className = "save-status full-span pending";
+  todoSaveStatus.textContent = entryType === "task" ? "Saving task..." : "Saving subtask items...";
+
+  const saved = await persistTodoItemUpdate(updatedItem, previousItems, "To-do save failed. Please try again.");
+  if (!saved) {
+    return;
+  }
+
+  todoInput.value = "";
+  if (todoTaskInput) {
+    todoTaskInput.value = "";
+  }
+  if (todoEntryTypeSelect) {
+    todoEntryTypeSelect.value = "task";
+  }
+  if (todoParentTaskSelect && entryType === "subtask") {
+    todoParentTaskSelect.value = parentTaskId;
+  }
+  todoSaveStatus.className = "save-status full-span saved";
+  todoSaveStatus.textContent = `${entryType === "task" ? "Task" : "Subtasks"} saved ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  syncTodoTaskOptions();
+}
+
+function renderTodoPage() {
+  if (!todoCourseList) {
+    return;
+  }
+
+  if (isTodoInlineEditing()) {
+    return;
+  }
+
+  renderTodoCourseOptions();
+
+  const visibleItems = state.items.filter((item) => !state.deletedItemIds.includes(item.id));
+
+  if (!visibleItems.length) {
+    todoCourseList.innerHTML = '<div class="empty-state">Add a study item first, then build its to-do checklist here.</div>';
+    return;
+  }
+
+  const template = document.getElementById("todoCourseTemplate");
+  todoCourseList.innerHTML = "";
+
+  const sortedItems = [...visibleItems].sort((a, b) => a.course.localeCompare(b.course));
+
+  sortedItems.forEach((item) => {
+    const fragment = template.content.cloneNode(true);
+    const title = fragment.querySelector(".todo-course-title");
+    const summary = fragment.querySelector(".todo-course-summary");
+    const percent = fragment.querySelector(".todo-progress-percent");
+    const detail = fragment.querySelector(".todo-progress-detail");
+    const bar = fragment.querySelector(".todo-progress-bar span");
+    const list = fragment.querySelector(".todo-list");
+    const todoItems = normalizeTodoItems(item.todoItems);
+    const completedCount = todoItems.filter((entry) => entry.done).length;
+    const completionPercent = getTodoCompletionPercent(item);
+
+    title.textContent = item.course;
+    summary.textContent = todoItems.length
+      ? `${completedCount} of ${todoItems.length} items completed`
+      : "No to-do items added yet.";
+    percent.textContent = `${completionPercent}%`;
+    detail.textContent = `${completedCount} of ${todoItems.length} done`;
+    bar.style.width = `${completionPercent}%`;
+
+    if (!todoItems.length) {
+      list.innerHTML = '<div class="empty-state compact-empty-state">No to-do items yet.</div>';
+    } else {
+      const renderTodoNode = (todo, depth = 0) => {
+        const group = document.createElement("div");
+        group.className = "todo-task-group";
+        group.dataset.depth = String(depth);
+        if (depth > 0) {
+          group.style.marginLeft = `${Math.min(depth * 20, 80)}px`;
+        }
+
+        const row = document.createElement("div");
+        row.className = "todo-item-row";
+        row.dataset.depth = String(depth);
+        row.dataset.kind = todo.kind;
+
+        const text = document.createElement("span");
+        text.textContent = todo.text;
+        text.className = "todo-item-text";
+        text.dataset.depth = String(depth);
+        text.dataset.kind = todo.kind;
+        if (todo.done) {
+          text.classList.add("done");
+        }
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = todo.done;
+
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "todo-delete-btn small-delete-btn";
+        deleteButton.textContent = depth === 0 ? "Delete task" : "Delete";
+
+        const editButton = document.createElement("button");
+        editButton.type = "button";
+        editButton.className = "todo-edit-btn small-delete-btn";
+        editButton.textContent = "Edit";
+
+        const moveButton = document.createElement("button");
+        moveButton.type = "button";
+        moveButton.className = "todo-move-btn small-delete-btn";
+        moveButton.textContent = "Move";
+
+        checkbox.addEventListener("change", async () => {
+          const previousItems = state.items.map((entry) => normalizePlannerItem(entry));
+          const updatedItem = normalizePlannerItem({
+            ...item,
+            todoItems: todoItems.map((entry) => (
+              entry.id === todo.id ? { ...entry, done: checkbox.checked } : entry
+            )),
+            updatedAt: new Date().toISOString()
+          });
+
+          await persistTodoItemUpdate(updatedItem, previousItems);
+        });
+
+        deleteButton.addEventListener("click", async () => {
+          const previousItems = state.items.map((entry) => normalizePlannerItem(entry));
+          const descendantIds = getTodoDescendantIds(todoItems, todo.id);
+          const updatedItem = normalizePlannerItem({
+            ...item,
+            todoItems: todoItems.filter((entry) => entry.id !== todo.id && !descendantIds.includes(entry.id)),
+            updatedAt: new Date().toISOString()
+          });
+          await persistTodoItemUpdate(updatedItem, previousItems, "To-do delete failed. Please try again.");
+        });
+
+        editButton.addEventListener("click", async () => {
+          if (row.dataset.editing === "true") {
+            return;
+          }
+
+          row.dataset.editing = "true";
+          const input = document.createElement("input");
+          input.type = "text";
+          input.value = todo.text;
+          input.className = "todo-edit-input";
+
+          const saveButton = document.createElement("button");
+          saveButton.type = "button";
+          saveButton.className = "todo-edit-btn small-delete-btn";
+          saveButton.textContent = "Save";
+
+          const cancelButton = document.createElement("button");
+          cancelButton.type = "button";
+          cancelButton.className = "todo-cancel-btn small-delete-btn";
+          cancelButton.textContent = "Cancel";
+
+          const restoreView = () => {
+            input.remove();
+            text.hidden = false;
+            actionWrap.innerHTML = "";
+            actionWrap.append(editButton, deleteButton, checkbox);
+            row.dataset.editing = "false";
+          };
+
+          const saveRename = async () => {
+            const nextText = input.value.trim();
+            if (!nextText) {
+              restoreView();
+              return;
+            }
+
+            const previousItems = state.items.map((entry) => normalizePlannerItem(entry));
+            const updatedItem = normalizePlannerItem({
+              ...item,
+              todoItems: todoItems.map((entry) => (
+                entry.id === todo.id ? { ...entry, text: nextText, taskTitle: entry.kind === "task" ? nextText : entry.taskTitle } : entry
+              )),
+              updatedAt: new Date().toISOString()
+            });
+
+            const saved = await persistTodoItemUpdate(updatedItem, previousItems, "To-do rename failed. Please try again.");
+            if (!saved) {
+              restoreView();
+              return;
+            }
+          };
+
+          cancelButton.addEventListener("click", restoreView);
+          saveButton.addEventListener("click", saveRename);
+          input.addEventListener("keydown", (renameEvent) => {
+            if (renameEvent.key === "Enter") {
+              renameEvent.preventDefault();
+              void saveRename();
+            } else if (renameEvent.key === "Escape") {
+              renameEvent.preventDefault();
+              restoreView();
+            }
+          });
+
+          text.hidden = true;
+          actionWrap.innerHTML = "";
+          actionWrap.append(cancelButton, saveButton, checkbox);
+          row.insertBefore(input, actionWrap);
+          input.focus();
+          input.select();
+        });
+
+        moveButton.addEventListener("click", async () => {
+          if (row.dataset.editing === "true") {
+            return;
+          }
+
+          row.dataset.editing = "true";
+          const select = document.createElement("select");
+          select.className = "todo-move-select";
+
+          const noParentOption = document.createElement("option");
+          noParentOption.value = "";
+          noParentOption.textContent = "No parent (top level)";
+          select.appendChild(noParentOption);
+
+          getAllowedTodoParentOptions(todoItems, todo).forEach((entry) => {
+            const option = document.createElement("option");
+            option.value = entry.id;
+            option.textContent = entry.label.replace(/\u00A0/g, " ");
+            if (entry.id === (todo.parentTaskId || "")) {
+              option.selected = true;
+            }
+            select.appendChild(option);
+          });
+
+          select.value = todo.parentTaskId || "";
+
+          const saveMoveButton = document.createElement("button");
+          saveMoveButton.type = "button";
+          saveMoveButton.className = "todo-edit-btn small-delete-btn";
+          saveMoveButton.textContent = "Apply";
+
+          const cancelMoveButton = document.createElement("button");
+          cancelMoveButton.type = "button";
+          cancelMoveButton.className = "todo-cancel-btn small-delete-btn";
+          cancelMoveButton.textContent = "Cancel";
+
+          const restoreMoveView = () => {
+            select.remove();
+            text.hidden = false;
+            actionWrap.innerHTML = "";
+            actionWrap.append(moveButton, editButton, deleteButton, checkbox);
+            row.dataset.editing = "false";
+          };
+
+          const applyMove = async () => {
+            const nextParentId = select.value;
+            const parentEntry = todoItems.find((entry) => entry.id === nextParentId);
+            const previousItems = state.items.map((entry) => normalizePlannerItem(entry));
+            const updatedItem = normalizePlannerItem({
+              ...item,
+              todoItems: todoItems.map((entry) => (
+                entry.id === todo.id
+                  ? {
+                    ...entry,
+                    parentTaskId: nextParentId,
+                    kind: nextParentId ? "subtask" : "task",
+                    taskTitle: parentEntry?.text || entry.taskTitle || entry.text
+                  }
+                  : entry
+              )),
+              updatedAt: new Date().toISOString()
+            });
+
+            const saved = await persistTodoItemUpdate(updatedItem, previousItems, "To-do move failed. Please try again.");
+            if (!saved) {
+              restoreMoveView();
+            }
+          };
+
+          cancelMoveButton.addEventListener("click", restoreMoveView);
+          saveMoveButton.addEventListener("click", applyMove);
+
+          text.hidden = true;
+          actionWrap.innerHTML = "";
+          actionWrap.append(cancelMoveButton, saveMoveButton, checkbox);
+          row.insertBefore(select, actionWrap);
+          select.focus();
+        });
+
+        const actionWrap = document.createElement("div");
+        actionWrap.className = "todo-item-actions";
+        actionWrap.append(moveButton, editButton, deleteButton, checkbox);
+
+        row.append(text, actionWrap);
+        group.appendChild(row);
+
+        const children = getTodoChildren(todoItems, todo.id);
+        children.forEach((child) => {
+          group.appendChild(renderTodoNode(child, depth + 1));
+        });
+
+        return group;
+      };
+
+      getTodoChildren(todoItems, "").forEach((todo) => {
+        list.appendChild(renderTodoNode(todo, 0));
+      });
+    }
+
+    todoCourseList.appendChild(fragment);
   });
 }
 
@@ -3134,7 +3748,7 @@ function getSharedTimerSessionSnapshot() {
 function buildSharedPlannerStateSnapshot() {
   return {
     items: isHostedApp ? [] : state.items.map((item) => normalizePlannerItem(item)),
-    deletedItemIds: isHostedApp ? [] : state.deletedItemIds,
+    deletedItemIds: state.deletedItemIds,
     sessions: state.sessions,
     timerSettings: state.timerSettings,
     timerSession: getSharedTimerSessionSnapshot()

@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260510d">
+  <link rel="stylesheet" href="styles.css?v=20260510h">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -70,6 +70,7 @@
         <a href="#plannerSection" class="section-nav-link">Planner</a>
         <a href="#timerSection" class="section-nav-link">Timer</a>
         <a href="#tasksSection" class="section-nav-link">Tasks</a>
+        <a href="#todoSection" class="section-nav-link">To-do</a>
         <a href="#reportsSection" class="section-nav-link">Reports</a>
       </nav>
 
@@ -256,6 +257,52 @@
           <div id="itemsList" class="item-grid"></div>
         </section>
 
+        <section class="panel todo-panel" id="todoSection">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Course To-do</p>
+              <h2>Checklist by course</h2>
+            </div>
+            <p class="section-note">Choose a course, add a task, and optionally nest subtasks under any item.</p>
+          </div>
+
+          <form id="todoForm" class="todo-form">
+            <label>
+              Course
+              <select id="todoCourseSelect" required>
+                <option value="">Choose a course</option>
+              </select>
+            </label>
+            <label>
+              Type
+              <select id="todoEntryType">
+                <option value="task">Task only</option>
+                <option value="subtask">Add subtask</option>
+              </select>
+            </label>
+            <label class="todo-task-input-field">
+              Task
+              <input type="text" id="todoTaskInput" placeholder="Example: Chapter 3 review">
+            </label>
+            <label class="full-span" id="todoParentTaskField" hidden>
+              Choose parent item
+              <select id="todoParentTaskSelect">
+                <option value="">Choose a task or subtask</option>
+              </select>
+            </label>
+            <label class="full-span" id="todoInputField" hidden>
+              Subtasks
+              <textarea id="todoInput" rows="2" placeholder="Paste one subtask per line"></textarea>
+            </label>
+            <div class="todo-actions full-span">
+              <button type="submit" class="primary-btn">Add to-do items</button>
+            </div>
+            <p class="save-status full-span" id="todoSaveStatus" aria-live="polite"></p>
+          </form>
+
+          <div id="todoCourseList" class="todo-course-list"></div>
+        </section>
+
         <section class="panel reports-panel" id="reportsSection">
           <div class="section-heading">
             <div>
@@ -330,7 +377,28 @@
     </article>
   </template>
 
+  <template id="todoCourseTemplate">
+    <article class="todo-course-card">
+      <div class="todo-course-header">
+        <div>
+          <h3 class="todo-course-title"></h3>
+          <p class="todo-course-summary"></p>
+        </div>
+      </div>
+      <div class="todo-progress-block">
+        <div class="todo-progress-meta">
+          <strong class="todo-progress-percent">0%</strong>
+          <span class="todo-progress-detail">0 of 0 done</span>
+        </div>
+        <div class="progress-bar todo-progress-bar">
+          <span></span>
+        </div>
+      </div>
+      <div class="todo-list"></div>
+    </article>
+  </template>
+
   <script src="supabase-config.js"></script>
-  <script src="app.js?v=20260510d"></script>
+  <script src="app.js?v=20260510o"></script>
 </body>
 </html>
