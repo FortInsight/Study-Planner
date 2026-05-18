@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260510h">
+  <link rel="stylesheet" href="styles.css?v=20260517h">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -309,7 +309,15 @@
               <p class="eyebrow">Performance</p>
               <h2>Achievement report</h2>
             </div>
-            <p class="section-note">A quick view of how consistently you are hitting your study goals.</p>
+            <div class="report-controls">
+              <p class="section-note">A quick view of how consistently you are hitting your study goals.</p>
+              <label class="report-course-filter">
+                Course
+                <select id="reportCourseFilter">
+                  <option value="">All courses</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           <div class="report-grid" id="reportCards"></div>
@@ -332,6 +340,14 @@
               <button type="button" class="timeline-btn" data-trend-view="year">Year</button>
             </div>
             <div id="focusTrend" class="bar-chart"></div>
+          </div>
+
+          <div class="chart-wrap">
+            <div class="line-chart-header">
+              <strong>Daily spend</strong>
+              <span>Actual focused study time over the selected period.</span>
+            </div>
+            <div id="focusSpendLine" class="line-chart"></div>
           </div>
 
           <div class="chart-wrap">
@@ -399,6 +415,6 @@
   </template>
 
   <script src="supabase-config.js"></script>
-  <script src="app.js?v=20260510o"></script>
+  <script src="app.js?v=20260517h"></script>
 </body>
 </html>

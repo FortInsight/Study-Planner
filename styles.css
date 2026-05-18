@@ -910,6 +910,25 @@ button:hover {
 
 .todo-item-text {
   flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.todo-item-due {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(115, 187, 255, 0.14);
+  border: 1px solid rgba(115, 187, 255, 0.2);
+  color: #d8ebff;
+  font-size: 0.76em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
 .todo-item-text[data-depth="0"] {
@@ -1005,7 +1024,7 @@ button:hover {
 
 .report-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 20px;
 }
@@ -1026,6 +1045,18 @@ button:hover {
 .report-card strong {
   font-size: 1.8rem;
   font-family: "Space Grotesk", sans-serif;
+}
+
+.report-controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.report-course-filter {
+  min-width: 220px;
 }
 
 .chart-wrap {
@@ -1074,6 +1105,12 @@ button:hover {
   font-size: 0.82rem;
 }
 
+.bar-meta {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
 .bar-label {
   font-weight: 700;
 }
@@ -1083,6 +1120,75 @@ button:hover {
   font-size: 0.78rem;
   line-height: 1.2;
   text-align: center;
+}
+
+.line-chart-wrap {
+  display: grid;
+  gap: 10px;
+}
+
+.line-chart-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.line-chart-header strong {
+  font-size: 0.98rem;
+  font-family: "Space Grotesk", sans-serif;
+}
+
+.line-chart-header span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.line-chart {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  border-top: 1px solid rgba(210, 225, 255, 0.08);
+  padding-top: 12px;
+}
+
+.line-chart-svg {
+  width: 100%;
+  min-width: 320px;
+  height: 170px;
+}
+
+.line-chart-axis {
+  stroke: rgba(210, 225, 255, 0.14);
+  stroke-width: 1.5;
+}
+
+.line-chart-polyline {
+  fill: none;
+  stroke: #67b8ff;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.line-chart-dot {
+  fill: #67b8ff;
+  stroke: #0b1d3f;
+  stroke-width: 2;
+}
+
+.line-chart-value {
+  fill: var(--ink);
+  font-size: 11px;
+  font-family: "DM Sans", sans-serif;
+  font-weight: 700;
+}
+
+.line-chart-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-family: "DM Sans", sans-serif;
 }
 
 .achievement-doughnut-wrap {
@@ -1260,12 +1366,21 @@ button:hover {
     grid-template-columns: 1fr;
   }
 
+  .report-grid {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  }
+
   .todo-form {
     grid-template-columns: 1fr;
   }
 
   .todo-progress-meta {
     flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .report-controls,
+  .line-chart-header {
     align-items: flex-start;
   }
 }

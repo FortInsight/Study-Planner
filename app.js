@@ -83,9 +83,11 @@ const todoSaveStatus = document.getElementById("todoSaveStatus");
 const todoCourseList = document.getElementById("todoCourseList");
 const reportCards = document.getElementById("reportCards");
 const focusTrend = document.getElementById("focusTrend");
+const focusSpendLine = document.getElementById("focusSpendLine");
 const focusTrendSubtitle = document.getElementById("focusTrendSubtitle");
 const trendFilterControls = document.getElementById("trendFilterControls");
 const focusTrendDateFilter = document.getElementById("focusTrendDateFilter");
+const reportCourseFilter = document.getElementById("reportCourseFilter");
 const typeBreakdown = document.getElementById("typeBreakdown");
 const timerDisplay = document.getElementById("timerDisplay");
 const timerStage = document.getElementById("timerStage");
@@ -118,6 +120,7 @@ let planEditorMode = "create";
 let trendView = "week";
 let viewCursor = startOfDay(new Date());
 let trendCursor = startOfDay(new Date());
+let reportCourseFilterValue = "";
 let saveFeedbackByItemId = {};
 let profileDisplayName = "";
 let sharedStateSyncTimeout = null;
@@ -165,6 +168,7 @@ timerCourseSelect.addEventListener("change", handleTimerCourseChange);
 upcomingDateFilter.addEventListener("change", handleUpcomingDateFilterChange);
 contentUnitTypeInput.addEventListener("change", syncCustomContentField);
 focusTrendDateFilter.addEventListener("change", handleFocusTrendDateFilterChange);
+reportCourseFilter?.addEventListener("change", handleReportCourseFilterChange);
 document.addEventListener("visibilitychange", handleTimerVisibilityChange);
 window.addEventListener("focus", handleTimerVisibilityChange);
 window.addEventListener("hashchange", syncSectionNavFromHash);
@@ -213,7 +217,8 @@ function normalizeTodoItems(items) {
         text: String(entry?.text || "").trim(),
         done: Boolean(entry?.done),
         parentTaskId: String(entry?.parentTaskId || ""),
-        taskTitle: String(entry?.taskTitle || "").trim()
+        taskTitle: String(entry?.taskTitle || "").trim(),
+        dueDate: String(entry?.dueDate || "").trim()
       }))
       .filter((entry) => entry.text);
   }
@@ -240,7 +245,8 @@ function normalizeTodoItems(items) {
       text: taskTitle,
       done: false,
       parentTaskId: "",
-      taskTitle: taskTitle
+      taskTitle: taskTitle,
+      dueDate: ""
     });
     subtasks.forEach((subtask) => {
       if (!subtask.text) {
@@ -252,7 +258,8 @@ function normalizeTodoItems(items) {
         text: subtask.text,
         done: subtask.done,
         parentTaskId: taskId,
-        taskTitle: taskTitle
+        taskTitle: taskTitle,
+        dueDate: String(subtask?.dueDate || "").trim()
       });
     });
   });
@@ -268,7 +275,7 @@ function getTodoCompletionPercent(item) {
   return Math.round((completed / total) * 100);
 }
 
-function parseTodoLines(value, taskTitle = "General", parentTaskId = "") {
+function parseTodoLines(value, taskTitle = "General", parentTaskId = "", dueDate = "") {
   return String(value || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -279,12 +286,31 @@ function parseTodoLines(value, taskTitle = "General", parentTaskId = "") {
       kind: "subtask",
       done: false,
       parentTaskId,
-      taskTitle: String(taskTitle || "General").trim() || "General"
+      taskTitle: String(taskTitle || "General").trim() || "General",
+      dueDate: String(dueDate || "").trim()
     }));
 }
 
 function getTodoChildren(todoItems, parentTaskId = "") {
   return todoItems.filter((entry) => (entry.parentTaskId || "") === parentTaskId);
+}
+
+function reconcileTodoHierarchy(todoItems) {
+  const normalizedItems = normalizeTodoItems(todoItems);
+
+  const applyCompletion = (parentId = "") => {
+    const children = getTodoChildren(normalizedItems, parentId);
+    children.forEach((child) => {
+      applyCompletion(child.id);
+      const nestedChildren = getTodoChildren(normalizedItems, child.id);
+      if (nestedChildren.length) {
+        child.done = nestedChildren.every((entry) => entry.done);
+      }
+    });
+  };
+
+  applyCompletion("");
+  return normalizedItems;
 }
 
 function getTodoDescendantIds(todoItems, parentId) {
@@ -1647,8 +1673,7 @@ async function handleAddItem(event) {
     createdAt: existingItem?.createdAt || new Date().toISOString()
   };
 
-  item.progress = getDisplayedTimeProgress(item);
-  item.completed = isStudyGoalAchieved(item);
+  const recalculatedItem = recalculateItemCompletionState(item);
 
   if (plannerSaveStatus) {
     plannerSaveStatus.className = "save-status full-span pending";
@@ -1657,8 +1682,8 @@ async function handleAddItem(event) {
 
   if (isHostedApp) {
     try {
-      state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
-      const savedItem = await saveTaskToSupabase(item, null, {
+      state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== recalculatedItem.id);
+      const savedItem = await saveTaskToSupabase(recalculatedItem, null, {
         skipRemoteLookup: !existingItem
       });
 
@@ -1698,12 +1723,12 @@ async function handleAddItem(event) {
     }
   }
 
-  state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== item.id);
+  state.deletedItemIds = state.deletedItemIds.filter((deletedId) => deletedId !== recalculatedItem.id);
 
   if (existingItem) {
-    state.items = state.items.map((entry) => entry.id === existingItem.id ? item : entry);
+    state.items = state.items.map((entry) => entry.id === existingItem.id ? recalculatedItem : entry);
   } else {
-    state.items.unshift(item);
+    state.items.unshift(recalculatedItem);
   }
   saveState();
   resetPlannerForm();
@@ -1713,20 +1738,20 @@ async function handleAddItem(event) {
     schedulePlannerSaveStatusClear();
   }
   if (!existingItem && !timer.running) {
-    timerCourseSelect.value = item.id;
-    timer.selectedItemId = item.id;
+    timerCourseSelect.value = recalculatedItem.id;
+    timer.selectedItemId = recalculatedItem.id;
     syncTimerWithSelection(true);
     saveTimerSession();
   } else if (!timerCourseSelect.value) {
-    timer.selectedItemId = item.id;
+    timer.selectedItemId = recalculatedItem.id;
   }
   render();
 
   try {
-    const savedItem = await saveTaskToSupabase(item, null, {
+    const savedItem = await saveTaskToSupabase(recalculatedItem, null, {
       skipRemoteLookup: !existingItem
     });
-    state.items = state.items.map((entry) => entry.id === item.id ? savedItem : entry);
+    state.items = state.items.map((entry) => entry.id === recalculatedItem.id ? savedItem : entry);
     saveState();
     void syncSharedPlannerStateToSupabase();
     if (plannerSaveStatus) {
@@ -1734,7 +1759,7 @@ async function handleAddItem(event) {
       plannerSaveStatus.textContent = `${existingItem ? "Plan updated" : "Plan saved"} ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
       schedulePlannerSaveStatusClear();
     }
-    if (timer.selectedItemId === item.id) {
+    if (timer.selectedItemId === recalculatedItem.id) {
       timer.selectedItemId = savedItem.id;
     }
     render();
@@ -2324,10 +2349,12 @@ function renderItems() {
       ));
 
       if (isHostedApp) {
+        state.items = nextItems;
         saveFeedbackByItemId[saveFeedbackKey] = {
           tone: "pending",
           text: "Saving progress..."
         };
+        saveState();
         render();
       } else {
         state.items = nextItems;
@@ -2458,13 +2485,17 @@ function renderTodoCourseOptions() {
 }
 
 async function persistTodoItemUpdate(updatedItem, previousItems, onErrorMessage = "To-do update failed. Please try again.") {
-  state.items = state.items.map((entry) => entry.id === updatedItem.id ? updatedItem : entry);
+  const reconciledItem = normalizePlannerItem({
+    ...updatedItem,
+    todoItems: reconcileTodoHierarchy(updatedItem.todoItems)
+  });
+  state.items = state.items.map((entry) => entry.id === reconciledItem.id ? reconciledItem : entry);
   saveState();
   render();
 
   try {
-    const savedItem = await saveTaskToSupabase(updatedItem);
-    state.items = state.items.map((entry) => entry.id === updatedItem.id ? savedItem : entry);
+    const savedItem = await saveTaskToSupabase(reconciledItem);
+    state.items = state.items.map((entry) => entry.id === reconciledItem.id ? savedItem : entry);
     saveState();
     render();
     return true;
@@ -2532,7 +2563,7 @@ async function handleTodoSubmit(event) {
   const resolvedTaskTitle = selectedTask?.text || taskTitle;
   const newTodos = entryType === "task"
     ? []
-    : parseTodoLines(todoInput.value, resolvedTaskTitle, parentTaskId);
+    : parseTodoLines(todoInput.value, resolvedTaskTitle, parentTaskId, "");
 
   if (!selectedItem) {
     todoSaveStatus.className = "save-status full-span pending";
@@ -2569,7 +2600,8 @@ async function handleTodoSubmit(event) {
         text: taskTitle,
         done: false,
         parentTaskId: "",
-        taskTitle: taskTitle
+        taskTitle: taskTitle,
+        dueDate: ""
       }]
       : [...baseTodoItems, ...newTodos],
     updatedAt: new Date().toISOString()
@@ -2658,13 +2690,21 @@ function renderTodoPage() {
         row.dataset.kind = todo.kind;
 
         const text = document.createElement("span");
-        text.textContent = todo.text;
         text.className = "todo-item-text";
         text.dataset.depth = String(depth);
         text.dataset.kind = todo.kind;
         if (todo.done) {
           text.classList.add("done");
         }
+        if (todo.dueDate) {
+          const dueBadge = document.createElement("span");
+          dueBadge.className = "todo-item-due";
+          dueBadge.textContent = formatDate(todo.dueDate);
+          text.appendChild(dueBadge);
+        }
+        const textLabel = document.createElement("span");
+        textLabel.textContent = todo.text;
+        text.appendChild(textLabel);
 
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
@@ -2720,6 +2760,11 @@ function renderTodoPage() {
           input.value = todo.text;
           input.className = "todo-edit-input";
 
+          const dueDateInput = document.createElement("input");
+          dueDateInput.type = "date";
+          dueDateInput.value = todo.dueDate || "";
+          dueDateInput.className = "todo-edit-input";
+
           const saveButton = document.createElement("button");
           saveButton.type = "button";
           saveButton.className = "todo-edit-btn small-delete-btn";
@@ -2732,6 +2777,7 @@ function renderTodoPage() {
 
           const restoreView = () => {
             input.remove();
+            dueDateInput.remove();
             text.hidden = false;
             actionWrap.innerHTML = "";
             actionWrap.append(editButton, deleteButton, checkbox);
@@ -2749,7 +2795,14 @@ function renderTodoPage() {
             const updatedItem = normalizePlannerItem({
               ...item,
               todoItems: todoItems.map((entry) => (
-                entry.id === todo.id ? { ...entry, text: nextText, taskTitle: entry.kind === "task" ? nextText : entry.taskTitle } : entry
+                entry.id === todo.id
+                  ? {
+                    ...entry,
+                    text: nextText,
+                    dueDate: String(dueDateInput.value || "").trim(),
+                    taskTitle: entry.kind === "task" ? nextText : entry.taskTitle
+                  }
+                  : entry
               )),
               updatedAt: new Date().toISOString()
             });
@@ -2777,6 +2830,7 @@ function renderTodoPage() {
           actionWrap.innerHTML = "";
           actionWrap.append(cancelButton, saveButton, checkbox);
           row.insertBefore(input, actionWrap);
+          row.insertBefore(dueDateInput, actionWrap);
           input.focus();
           input.select();
         });
@@ -3153,6 +3207,39 @@ function buildUpdatedProgressItem(item, progressInput, occurrenceDate = null) {
   return updatedItem;
 }
 
+function recalculateItemCompletionState(item) {
+  let updatedItem = normalizePlannerItem(item);
+
+  if (usesOccurrenceProgress(updatedItem)) {
+    const occurrenceKeys = Object.keys(updatedItem.occurrenceProgress || {});
+    occurrenceKeys.forEach((occurrenceKey) => {
+      const progress = getDisplayedTimeProgress(updatedItem, occurrenceKey);
+      const completed = isStudyGoalAchieved({
+        ...updatedItem,
+        occurrenceProgress: {
+          ...(updatedItem.occurrenceProgress || {}),
+          [occurrenceKey]: {
+            ...getOccurrenceProgressEntry(updatedItem, occurrenceKey),
+            progress
+          }
+        }
+      }, occurrenceKey);
+
+      updatedItem = mergeOccurrenceProgressEntry(updatedItem, occurrenceKey, {
+        progress,
+        completed
+      });
+    });
+
+    updatedItem = mirrorOccurrenceEntryToItem(updatedItem, updatedItem.dueDate);
+  } else {
+    updatedItem.progress = getDisplayedTimeProgress(updatedItem);
+    updatedItem.completed = isStudyGoalAchieved(updatedItem);
+  }
+
+  return updatedItem;
+}
+
 function applySaveStatus(element, feedback) {
   if (!element) return;
   element.textContent = feedback?.text || "";
@@ -3179,22 +3266,24 @@ function renderTimelineHeader() {
 }
 
 function renderReports() {
+  renderReportCourseOptions();
   const reportAnchorDate = startOfDay(viewCursor);
-  const filteredEntries = getFilteredItems();
-  const dailyMinutes = getDisplayMinutesForRange("day", reportAnchorDate);
-  const weeklyMinutes = getDisplayMinutesForRange("week", reportAnchorDate);
-  const monthlyMinutes = getDisplayMinutesForRange("month", reportAnchorDate);
-  const yearlyMinutes = getDisplayMinutesForRange("year", reportAnchorDate);
+  const filteredEntries = getFilteredReportItems();
+  const dailyMinutes = getReportDisplayMinutesForRange("day", reportAnchorDate);
+  const weeklyMinutes = getReportDisplayMinutesForRange("week", reportAnchorDate);
+  const monthlyMinutes = getReportDisplayMinutesForRange("month", reportAnchorDate);
+  const yearlyMinutes = getReportDisplayMinutesForRange("year", reportAnchorDate);
   const completedItems = filteredEntries.filter(({ item, occurrenceDate }) => isStudyGoalAchieved(item, occurrenceDate)).length;
   const completionRate = filteredEntries.length ? Math.round((completedItems / filteredEntries.length) * 100) : 0;
-  const dailyTargetMinutes = getDailyTargetMinutesForDate(reportAnchorDate);
+  const dailyTargetMinutes = getReportDailyTargetMinutesForDate(reportAnchorDate);
   const todayAchievement = Math.min(100, Math.round((dailyMinutes / dailyTargetMinutes) * 100));
 
   const cards = [
     { label: "Daily achievement", value: `${todayAchievement}%` },
-    { label: "Weekly focus", value: `${formatMinutesDisplay(weeklyMinutes)} mins` },
-    { label: "Monthly focus", value: `${formatMinutesDisplay(monthlyMinutes)} mins` },
-    { label: "Yearly focus", value: `${formatMinutesDisplay(yearlyMinutes)} mins` },
+    { label: "Daily focus", value: formatReportTime(dailyMinutes) },
+    { label: "Weekly focus", value: formatReportTime(weeklyMinutes) },
+    { label: "Monthly focus", value: formatReportTime(monthlyMinutes) },
+    { label: "Yearly focus", value: formatReportTime(yearlyMinutes) },
     { label: "Tasks completed", value: completedItems },
     { label: "Completion rate", value: `${completionRate}%` }
   ];
@@ -3228,19 +3317,22 @@ function renderFocusTrend() {
   focusTrendDateFilter.value = formatDateInputValue(trendData.anchorDate ?? trendCursor);
   focusTrend.style.gridTemplateColumns = `repeat(${trendData.points.length}, minmax(0, 1fr))`;
 
-  const highest = Math.max(...trendData.points.map((point) => point.percent), 1);
+  const highest = Math.max(...trendData.points.map((point) => point.minutes), 1);
   focusTrend.innerHTML = trendData.points.map((point) => `
     <div class="bar">
-      <strong>${point.percent}%</strong>
-      <div class="bar-fill ${point.complete ? "complete" : ""}" style="height: ${Math.max(12, (point.percent / highest) * 160)}px"></div>
+      <strong>${formatCompactReportTime(point.minutes)}</strong>
+      <span class="bar-meta">${point.percent}% of plan</span>
+      <div class="bar-fill ${point.complete ? "complete" : ""}" style="height: ${Math.max(12, (point.minutes / highest) * 160)}px"></div>
       <span class="bar-label">${point.label}</span>
       <span class="bar-date">${point.dateLabel ?? ""}</span>
     </div>
   `).join("");
+
+  renderFocusSpendLine(trendData);
 }
 
 function renderAchievementMeasure() {
-  const filteredEntries = getFilteredItems();
+  const filteredEntries = getFilteredReportItems();
 
   if (!filteredEntries.length) {
     typeBreakdown.innerHTML = '<div class="empty-state">Add study items to compare achieved study time against your plan.</div>';
@@ -3286,10 +3378,12 @@ function getTrendData(view) {
       const hourDate = new Date(anchor);
       hourDate.setMinutes(0, 0, 0);
       hourDate.setHours(index * 3);
-      const nextHour = new Date(hourDate);
-      nextHour.setHours(hourDate.getHours() + 3);
-      const minutes = getAchievedMinutesForDate(anchor);
-      const percent = calculateAchievementPercent(minutes, getDailyTargetMinutesForDate(hourDate) || defaultState.timerSettings.dailyTargetMinutes);
+      const minutes = getReportAchievedMinutesForDate(anchor);
+      const percent = calculateAchievementPercent(
+        minutes,
+        getReportDailyTargetMinutesForDate(hourDate) || defaultState.timerSettings.dailyTargetMinutes,
+        { clamp: false }
+      );
       return {
         label: `${hourDate.toLocaleTimeString([], { hour: "numeric" })}`,
         dateLabel: hourDate.toLocaleDateString([], { month: "short", day: "numeric" }),
@@ -3312,9 +3406,9 @@ function getTrendData(view) {
       weekStart.setDate(monthStart.getDate() + (index * 7));
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekEnd.getDate() + 7);
-      const minutes = getAchievedMinutesForDateRange(weekStart, addDays(weekEnd, -1));
-      const plannedMinutes = getPlannedMinutesForDateRange(weekStart, addDays(weekEnd, -1));
-      const percent = calculateAchievementPercent(minutes, plannedMinutes);
+      const minutes = getReportAchievedMinutesForDateRange(weekStart, addDays(weekEnd, -1));
+      const plannedMinutes = getReportPlannedMinutesForDateRange(weekStart, addDays(weekEnd, -1));
+      const percent = calculateAchievementPercent(minutes, plannedMinutes, { clamp: false });
       return {
         label: `Week ${index + 1}`,
         dateLabel: `${weekStart.toLocaleDateString([], { month: "short", day: "numeric" })} - ${addDays(weekEnd, -1).toLocaleDateString([], { month: "short", day: "numeric" })}`,
@@ -3334,9 +3428,9 @@ function getTrendData(view) {
     const points = [...Array(12)].map((_, index) => {
       const monthDate = new Date(anchor.getFullYear(), index, 1);
       const nextMonth = new Date(anchor.getFullYear(), index + 1, 1);
-      const minutes = getAchievedMinutesForDateRange(monthDate, addDays(nextMonth, -1));
-      const plannedMinutes = getPlannedMinutesForDateRange(monthDate, addDays(nextMonth, -1));
-      const percent = calculateAchievementPercent(minutes, plannedMinutes);
+      const minutes = getReportAchievedMinutesForDateRange(monthDate, addDays(nextMonth, -1));
+      const plannedMinutes = getReportPlannedMinutesForDateRange(monthDate, addDays(nextMonth, -1));
+      const percent = calculateAchievementPercent(minutes, plannedMinutes, { clamp: false });
       return {
         label: monthDate.toLocaleDateString([], { month: "short" }),
         dateLabel: String(monthDate.getFullYear()),
@@ -3357,8 +3451,8 @@ function getTrendData(view) {
     weekStart.setDate(anchor.getDate() - 6);
     const date = addDays(weekStart, index);
     const label = date.toLocaleDateString([], { weekday: "short" });
-    const minutes = getAchievedMinutesForDate(date);
-    const percent = calculateAchievementPercent(minutes, getDailyTargetMinutesForDate(date));
+    const minutes = getReportAchievedMinutesForDate(date);
+    const percent = calculateAchievementPercent(minutes, getReportDailyTargetMinutesForDate(date), { clamp: false });
     return {
       label,
       dateLabel: date.toLocaleDateString([], { month: "short", day: "numeric" }),
@@ -3372,6 +3466,47 @@ function getTrendData(view) {
     anchorDate: anchor,
     points
   };
+}
+
+function renderFocusSpendLine(trendData) {
+  if (!focusSpendLine) {
+    return;
+  }
+
+  if (!trendData.points.length) {
+    focusSpendLine.innerHTML = '<div class="empty-state compact-empty-state">No study spend yet for this view.</div>';
+    return;
+  }
+
+  const values = trendData.points.map((point) => point.minutes || 0);
+  const maxValue = Math.max(...values, 1);
+  const width = Math.max(320, trendData.points.length * 88);
+  const height = 150;
+  const paddingX = 18;
+  const paddingY = 18;
+  const chartWidth = width - (paddingX * 2);
+  const chartHeight = height - (paddingY * 2);
+  const stepX = trendData.points.length > 1 ? chartWidth / (trendData.points.length - 1) : 0;
+  const points = values.map((value, index) => {
+    const x = paddingX + (stepX * index);
+    const y = paddingY + chartHeight - ((value / maxValue) * chartHeight);
+    return { x, y, value, meta: trendData.points[index] };
+  });
+  const polyline = points.map((point) => `${point.x},${point.y}`).join(" ");
+
+  focusSpendLine.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" class="line-chart-svg" role="img" aria-label="Daily study spend line chart">
+      <path d="M ${paddingX} ${height - paddingY} H ${width - paddingX}" class="line-chart-axis"></path>
+      <polyline points="${polyline}" class="line-chart-polyline"></polyline>
+      ${points.map((point) => `
+        <g>
+          <circle cx="${point.x}" cy="${point.y}" r="4" class="line-chart-dot"></circle>
+          <text x="${point.x}" y="${Math.max(12, point.y - 10)}" text-anchor="middle" class="line-chart-value">${formatCompactReportTime(point.value)}</text>
+          <text x="${point.x}" y="${height - 2}" text-anchor="middle" class="line-chart-label">${escapeHtml(point.meta.label)}</text>
+        </g>
+      `).join("")}
+    </svg>
+  `;
 }
 
 function ringCompletionBell() {
@@ -3798,6 +3933,11 @@ function getDisplayMinutesForRange(range, anchorDate = new Date()) {
   return getMinutesForRange(range, anchorDate);
 }
 
+function getReportDisplayMinutesForRange(range, anchorDate = new Date()) {
+  const { start, end } = getRangeBounds(range, anchorDate);
+  return getReportAchievedMinutesForDateRange(start, addDays(end, -1));
+}
+
 function getAchievedMinutesForDate(date) {
   const targetDate = startOfDay(date);
   const dateKey = getOccurrenceDateKey(targetDate);
@@ -3825,6 +3965,39 @@ function getAchievedMinutesForDateRange(startDate, endDate) {
 
   while (cursor <= safeEnd) {
     total += getAchievedMinutesForDate(cursor);
+    cursor = addDays(cursor, 1);
+  }
+
+  return Number(total.toFixed(2));
+}
+
+function getReportAchievedMinutesForDate(date) {
+  const targetDate = startOfDay(date);
+  const dateKey = getOccurrenceDateKey(targetDate);
+
+  return Number(getReportScopedItems().reduce((totalMinutes, item) => {
+    const dueDate = startOfDay(new Date(`${item.dueDate}T00:00:00`));
+    const repeat = normalizeRepeat(item.repeat);
+    const occursOnDate = repeat
+      ? matchesRecurringDate(dueDate, targetDate, repeat)
+      : isSameDay(dueDate, targetDate);
+
+    if (!occursOnDate) {
+      return totalMinutes;
+    }
+
+    const hours = getEffectiveAchievedHours(item, dateKey);
+    return totalMinutes + (hours * 60);
+  }, 0).toFixed(2));
+}
+
+function getReportAchievedMinutesForDateRange(startDate, endDate) {
+  let total = 0;
+  let cursor = startOfDay(startDate);
+  const safeEnd = startOfDay(endDate);
+
+  while (cursor <= safeEnd) {
+    total += getReportAchievedMinutesForDate(cursor);
     cursor = addDays(cursor, 1);
   }
 
@@ -3891,6 +4064,24 @@ function formatMinutesDisplay(value) {
     return String(rounded);
   }
   return rounded.toFixed(1);
+}
+
+function formatReportTime(minutes) {
+  const totalMinutes = Number(minutes || 0);
+  if (totalMinutes >= 60) {
+    const hours = totalMinutes / 60;
+    return `${hours % 1 === 0 ? hours.toFixed(0) : hours.toFixed(1)}h`;
+  }
+  return `${formatMinutesDisplay(totalMinutes)} mins`;
+}
+
+function formatCompactReportTime(minutes) {
+  const totalMinutes = Number(minutes || 0);
+  if (totalMinutes >= 60) {
+    const hours = totalMinutes / 60;
+    return `${hours % 1 === 0 ? hours.toFixed(0) : hours.toFixed(1)}h`;
+  }
+  return formatMinutesDisplay(totalMinutes);
 }
 
 function getDisplayedTimeProgress(item, occurrenceDate = null) {
@@ -3994,6 +4185,11 @@ function handleFocusTrendDateFilterChange() {
   renderReports();
 }
 
+function handleReportCourseFilterChange() {
+  reportCourseFilterValue = reportCourseFilter?.value || "";
+  renderReports();
+}
+
 function handleUpcomingDateFilterChange() {
   if (!upcomingDateFilter.value) return;
   activeView = "today";
@@ -4010,6 +4206,47 @@ function getFilteredItems() {
       return occurrenceDate ? { item, occurrenceDate } : null;
     })
     .filter(Boolean);
+}
+
+function getReportScopedItems() {
+  const visibleItems = state.items.filter((item) => !state.deletedItemIds.includes(item.id));
+  if (!reportCourseFilterValue) {
+    return visibleItems;
+  }
+  return visibleItems.filter((item) => item.id === reportCourseFilterValue);
+}
+
+function getFilteredReportItems() {
+  const windowRange = getActiveViewRange();
+
+  return getReportScopedItems()
+    .map((item) => {
+      const occurrenceDate = getOccurrenceForView(item, activeView, windowRange);
+      return occurrenceDate ? { item, occurrenceDate } : null;
+    })
+    .filter(Boolean);
+}
+
+function renderReportCourseOptions() {
+  if (!reportCourseFilter) {
+    return;
+  }
+
+  const visibleItems = state.items
+    .filter((item) => !state.deletedItemIds.includes(item.id))
+    .sort((a, b) => a.course.localeCompare(b.course));
+  const currentValue = reportCourseFilterValue;
+  const options = visibleItems.map((item) => (
+    `<option value="${item.id}">${escapeHtml(item.course)}</option>`
+  )).join("");
+
+  reportCourseFilter.innerHTML = `<option value="">All courses</option>${options}`;
+  if (visibleItems.some((item) => item.id === currentValue)) {
+    reportCourseFilter.value = currentValue;
+  } else {
+    reportCourseFilterValue = "";
+    reportCourseFilter.value = "";
+  }
 }
 
 function getViewDetails(view) {
@@ -4085,13 +4322,24 @@ function addYears(date, amount) {
   return new Date(value.getFullYear() + amount, 0, 1);
 }
 
-function calculateAchievementPercent(actualMinutes, plannedMinutes) {
+function calculateAchievementPercent(actualMinutes, plannedMinutes, options = {}) {
+  const { clamp = true } = options;
   if (!plannedMinutes || plannedMinutes <= 0) return 0;
-  return Math.min(100, Math.round((actualMinutes / plannedMinutes) * 100));
+  const percent = Math.round((actualMinutes / plannedMinutes) * 100);
+  return clamp ? Math.min(100, percent) : percent;
 }
 
 function getDailyTargetMinutesForDate(date) {
   const activeItems = getItemsScheduledForDate(date);
+  const total = activeItems.reduce(
+    (sumMinutes, item) => sumMinutes + normalizePomodoroSettings(item.pomodoro).dailyTargetMinutes,
+    0
+  );
+  return total || getActiveTimerSettings().dailyTargetMinutes;
+}
+
+function getReportDailyTargetMinutesForDate(date) {
+  const activeItems = getReportItemsScheduledForDate(date);
   const total = activeItems.reduce(
     (sumMinutes, item) => sumMinutes + normalizePomodoroSettings(item.pomodoro).dailyTargetMinutes,
     0
@@ -4112,9 +4360,34 @@ function getPlannedMinutesForDateRange(startDate, endDate) {
   return total;
 }
 
+function getReportPlannedMinutesForDateRange(startDate, endDate) {
+  let total = 0;
+  let cursor = startOfDay(startDate);
+  const safeEnd = startOfDay(endDate);
+
+  while (cursor <= safeEnd) {
+    total += getReportDailyTargetMinutesForDate(cursor);
+    cursor = addDays(cursor, 1);
+  }
+
+  return total;
+}
+
 function getItemsScheduledForDate(date) {
   const targetDate = startOfDay(date);
   return state.items.filter((item) => {
+    const dueDate = startOfDay(new Date(`${item.dueDate}T00:00:00`));
+    const repeat = normalizeRepeat(item.repeat);
+    if (!repeat) {
+      return isSameDay(dueDate, targetDate);
+    }
+    return matchesRecurringDate(dueDate, targetDate, repeat);
+  });
+}
+
+function getReportItemsScheduledForDate(date) {
+  const targetDate = startOfDay(date);
+  return getReportScopedItems().filter((item) => {
     const dueDate = startOfDay(new Date(`${item.dueDate}T00:00:00`));
     const repeat = normalizeRepeat(item.repeat);
     if (!repeat) {
